@@ -374,7 +374,8 @@ export const useStore = create<State>((set, get) => ({
     const profile = profileParts(profiles.find((p) => p.id === s.activeProfile));
     const start = opts.startTime ?? null;
     let config = profile.config;
-    if (opts.pov != null) config += `follow ${opts.pov}\n`;
+    // WolfcamQL crashes on `follow` before the first frame is drawn; `at 1` defers it to that frame.
+    if (opts.pov != null) config += `at 1 follow ${opts.pov}\n`;
     if (start != null) config += `seekservertime ${Math.round(start)}\n`;
     if (opts.paused) config += "cl_freezeDemo 1\n";
     const spec: LaunchSpec = {

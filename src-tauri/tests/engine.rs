@@ -82,6 +82,7 @@ fn live_session_executes_each_command_batch_once() {
         return;
     };
     let info = wolfdeck_lib::demo::parse_file(std::path::Path::new(&e.demo)).unwrap();
+    let pov = info.kills.iter().find(|k| !k.own_goal).map(|k| k.killer).expect("demo has kills");
     let sink = Arc::new(Collect::default());
     let session = Arc::new(Session::default());
     let spec = LaunchSpec {
@@ -89,7 +90,7 @@ fn live_session_executes_each_command_batch_once() {
         home: e.home.clone(),
         cvars: small_window(),
         demo: Some(e.demo.clone()),
-        config: "echo WD_TEST_SESSION_CFG\n".into(),
+        config: format!("echo WD_TEST_SESSION_CFG\n{}", wolfdeck_lib::render::follow_line(pov)),
         extra_args: e.args.clone(),
         control_key: String::new(),
     };
@@ -110,6 +111,14 @@ fn live_session_executes_each_command_batch_once() {
         assert_eq!(log_count(&e.home, &format!("WD_TEST quoted {i}")), 1, "quoted arg {i}");
     }
     assert_eq!(log_count(&e.home, "WD_TEST_EARLY"), 1, "early send returned {early:?}");
+
+    // The point of view requested at launch is in effect (`follow` without arguments reports it).
+    session.send(&["follow".into()]).unwrap();
+    let following = format!("currently following [{pov}]");
+    wait_for("follow report", 20, || {
+        let log = std::fs::read(std::path::Path::new(&e.home).join("wolfcam-ql/qconsole.log")).unwrap_or_default();
+        String::from_utf8_lossy(&log).contains(&following)
+    });
 
     // Seeking by server time lands where the parser says the match is.
     let target = info.game_start_time.unwrap_or(info.first_server_time) + 20_000;
@@ -156,13 +165,38 @@ fn render_queue_captures_and_encodes_a_clip() {
             delete_source: true,
         }),
     };
+    // Second clip: lossless codec, engine motion blur, sound in a separate WAV, another POV.
+    let mut blur = job.clone();
+    blur.id = "job2".into();
+    blur.name = "wolfdeck blur clip".into();
+    blur.pov = info.kills.iter().find(|k| !k.own_goal).map(|k| k.killer);
+    blur.video_args = "avins wav".into();
+    blur.cvars.retain(|(k, _)| k != "cl_aviCodec");
+    blur.cvars.push(("cl_aviCodec".into(), "huffyuv".into()));
+    blur.cvars.push(("mme_blurFrames".into(), "4".into()));
+    if let Some(enc) = blur.encode.as_mut() {
+        enc.delete_source = false;
+    }
+
     let sink = Arc::new(Collect::default());
     let base = RenderBase { exe: e.exe, home: e.home.clone(), extra_args: e.args };
-    run_queue(vec![job], base, sink.clone(), Arc::new(AtomicBool::new(false)));
+    run_queue(vec![job, blur], base, sink.clone(), Arc::new(AtomicBool::new(false)));
 
     let events = sink.0.lock().unwrap();
-    let last = events.iter().rev().find(|(ev, _)| ev == "render-update").map(|(_, p)| p.clone()).unwrap();
+    let final_of = |id: &str| events.iter().rev().find(|(ev, p)| ev == "render-update" && p["id"] == id).map(|(_, p)| p.clone()).unwrap();
+    let last = final_of("job1");
     assert_eq!(last["status"], "done", "render failed: {last}");
+    let second = final_of("job2");
+    assert_eq!(second["status"], "done", "blur render failed: {second}");
+    let blur_mp4 = out_dir.join("wolfdeck_blur_clip.mp4");
+    let streams = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0"])
+        .arg(&blur_mp4)
+        .output()
+        .unwrap();
+    let streams = String::from_utf8_lossy(&streams.stdout);
+    assert!(streams.contains("video") && streams.contains("audio"), "separate WAV must be muxed in: {streams}");
+    assert!(std::path::Path::new(&e.home).join("wolfcam-ql/videos/wolfdeck_blur_clip.avi").exists(), "source kept when asked");
     assert!(events.iter().any(|(ev, p)| ev == "render-update" && p["status"] == "capturing" && p["progress"].as_f64().unwrap_or(0.0) >= 0.5));
     assert!(events.iter().any(|(ev, _)| ev == "render-finished"));
     let mp4 = out_dir.join("wolfdeck_test_clip.mp4");

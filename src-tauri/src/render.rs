@@ -63,6 +63,13 @@ pub fn safe_name(s: &str) -> String {
     if n.is_empty() { "clip".into() } else { n }
 }
 
+/// WolfcamQL crashes when `follow <n>` runs before the first snapshot has
+/// been drawn, which is the case for anything executed right after `+demo`.
+/// An `at` command with a time in the past fires on the first drawn frame.
+pub fn follow_line(client: i32) -> String {
+    format!("at 1 follow {client}\n")
+}
+
 /// The script appended to the job's config.
 pub fn capture_script(job: &RenderJob) -> String {
     let name = safe_name(&job.name);
@@ -72,7 +79,7 @@ pub fn capture_script(job: &RenderJob) -> String {
     s.push_str("\n// --- WolfDeck capture ---\n");
     s.push_str("cl_freezeDemo 0\ntimescale 1\n");
     if let Some(p) = job.pov {
-        s.push_str(&format!("follow {p}\n"));
+        s.push_str(&follow_line(p));
     }
     s.push_str(&format!("seekservertime {}\n", start - job.pre_roll_ms.max(0)));
     let video = if job.video_args.trim().is_empty() { "avi" } else { job.video_args.trim() };
@@ -296,7 +303,8 @@ mod tests {
         let job = RenderJob { name: "my clip (1)".into(), start_time: 100_000, end_time: 110_000, pov: Some(3), pre_roll_ms: 4000, ..Default::default() };
         let s = capture_script(&job);
         let pos = |needle: &str| s.find(needle).unwrap_or_else(|| panic!("missing {needle}"));
-        assert!(pos("follow 3") < pos("seekservertime 96000"));
+        assert!(pos("at 1 follow 3") < pos("seekservertime 96000"));
+        assert!(!s.contains("\nfollow "), "a bare follow before the first frame crashes the engine");
         assert!(pos("seekservertime 96000") < pos("at 100000 video avi name my_clip__1"));
         assert!(pos("at 100000 video") < pos("at 105000 echo WD_PROGRESS 50"));
         assert!(pos("at 110000 stopvideo") < pos("at 110250 quit"));

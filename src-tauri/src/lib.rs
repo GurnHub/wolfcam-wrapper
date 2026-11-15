@@ -1,4 +1,7 @@
 //! WolfDeck backend: demo parsing, library, WolfcamQL control and rendering.
+//!
+//! Commands that touch the disk or a child process are marked `async` so they
+//! run on the worker pool instead of blocking the window's event loop.
 
 pub mod demo;
 pub mod library;
@@ -58,12 +61,12 @@ fn store_save(app: AppHandle, name: String, value: Value) -> Result<(), String> 
     std::fs::rename(&tmp, &f).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn detect_paths() -> paths::Detected {
     paths::detect()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn check_install(exe: String, home: String, ql_path: String) -> paths::InstallStatus {
     paths::check_install(&exe, &home, &ql_path)
 }
@@ -73,13 +76,13 @@ async fn sync_paks(exe: String, home: String, ql_path: String) -> Result<Vec<Str
     tauri::async_runtime::spawn_blocking(move || paths::sync_paks(&exe, &home, &ql_path)).await.map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_game_files(exe: String, home: String, sub: String, exts: Vec<String>) -> Vec<paths::GameFile> {
     let exts: Vec<&str> = exts.iter().map(|s| s.as_str()).collect();
     paths::list_game_files(&exe, &home, &sub, &exts)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn read_text(path: String) -> Result<String, String> {
     let md = std::fs::metadata(&path).map_err(|e| e.to_string())?;
     if md.len() > 2 * 1024 * 1024 {
@@ -127,7 +130,7 @@ async fn search_frags(app: AppHandle, paths: Vec<String>, filter: library::FragF
     tauri::async_runtime::spawn_blocking(move || library::search_frags(&cache, &paths, &filter)).await.map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn demo_trash(paths: Vec<String>) -> Result<(), String> {
     trash::delete_all(&paths).map_err(|e| e.to_string())
 }
@@ -151,7 +154,7 @@ fn demo_rename(path: String, new_name: String) -> Result<String, String> {
     Ok(to.to_string_lossy().into_owned())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn demo_move(paths: Vec<String>, dir: String) -> Result<u32, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let mut moved = 0;
@@ -171,7 +174,7 @@ fn demo_move(paths: Vec<String>, dir: String) -> Result<u32, String> {
     Ok(moved)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn launch(app: AppHandle, state: State<Backend>, spec: session::LaunchSpec) -> Result<u32, String> {
     if state.render_running.load(Ordering::Relaxed) {
         return Err("a render is in progress".into());
@@ -179,6 +182,7 @@ fn launch(app: AppHandle, state: State<Backend>, spec: session::LaunchSpec) -> R
     state.session.launch(spec, Arc::new(AppSink(app)))
 }
 
+// Stays on the event loop: it is quick, and that keeps commands in the order they were sent.
 #[tauri::command]
 fn send_commands(state: State<Backend>, commands: Vec<String>) -> Result<(), String> {
     state.session.send(&commands)
@@ -197,7 +201,7 @@ fn wolfcam_running(state: State<Backend>) -> bool {
     state.session.is_running()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn start_render(app: AppHandle, state: State<Backend>, jobs: Vec<render::RenderJob>, base: render::RenderBase) -> Result<(), String> {
     if state.render_running.swap(true, Ordering::SeqCst) {
         return Err("a render is already in progress".into());
@@ -222,7 +226,7 @@ fn render_running(state: State<Backend>) -> bool {
     state.render_running.load(Ordering::Relaxed)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn ffmpeg_version(path: String) -> Result<String, String> {
     render::ffmpeg_version(&path)
 }
