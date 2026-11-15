@@ -3,11 +3,13 @@
 //! WolfcamQL has no remote-control API, so WolfDeck uses what the engine
 //! offers:
 //!
-//! * **Start-up**: everything is passed on the command line plus a generated
-//!   `wolfdeck/session.cfg` that is executed once the demo has loaded.
-//! * **Live commands**: each batch is written to `wolfdeck/b<N>.cfg` and
-//!   listed in `wolfdeck/cmd.cfg`, guarded by a sequence cvar so a batch runs
-//!   exactly once no matter how often the file is executed. The engine is
+//! * **Start-up**: the command line stays minimal (the engine caps it at
+//!   1023 characters and 32 commands). Cvars go into `wolfdeck/pre.cfg`,
+//!   executed before the demo loads, and everything else into
+//!   `wolfdeck/session.cfg`, executed once the demo has loaded.
+//! * **Live commands**: each batch is written to a `wolfdeck/b<slot>.cfg`
+//!   file and listed in `wolfdeck/cmd.cfg`, guarded by a sequence cvar so a
+//!   batch runs exactly once no matter how often the file is executed. The engine is
 //!   then told to execute `cmd.cfg`: on Linux/macOS through its command pipe
 //!   (`com_pipefile`), on Windows by posting a key press to its window for a
 //!   key that WolfDeck binds to `execq wolfdeck/cmd.cfg`.
@@ -25,8 +27,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const PIPE_NAME: &str = "wolfdeck.pipe";
-/// How many recent batches stay listed in cmd.cfg.
-const BATCH_WINDOW: u64 = 8;
+/// How many recent batches stay listed in cmd.cfg. Batch files and the
+/// cvars that reference them are reused in a ring of this size, so the engine
+/// may fall this many batches behind (e.g. while loading) without losing any.
+const BATCH_WINDOW: u64 = 64;
 
 /// Receives events destined for the UI.
 pub trait Sink: Send + Sync + 'static {
@@ -39,8 +43,9 @@ pub struct LaunchSpec {
     pub exe: String,
     /// `fs_homepath`; empty selects the platform default.
     pub home: String,
-    /// Cvars set on the command line, before the demo loads. Needed for
-    /// anything the renderer latches (resolution, fullscreen, renderer).
+    /// Cvars applied before the demo loads (resolution, renderer, capture
+    /// settings ...). The video system is restarted first when one of the
+    /// values it latches differs from the saved engine config.
     pub cvars: Vec<(String, String)>,
     pub demo: Option<String>,
     /// Config text executed after the demo has loaded.
@@ -74,7 +79,28 @@ fn clean_token(s: &str) -> String {
     s.chars().filter(|c| !matches!(c, '"' | ';' | '\n' | '\r')).collect()
 }
 
-pub fn build_args(spec: &LaunchSpec) -> Vec<String> {
+/// Value of an archived cvar in the engine's saved config, if present.
+fn saved_cvar<'a>(q3config: &'a str, name: &str) -> Option<&'a str> {
+    q3config.lines().find_map(|line| {
+        let mut it = line.trim().splitn(3, char::is_whitespace);
+        let (cmd, key, value) = (it.next()?, it.next()?, it.next()?);
+        (cmd.eq_ignore_ascii_case("seta") && key.eq_ignore_ascii_case(name)).then(|| value.trim().trim_matches('"'))
+    })
+}
+
+/// Renderer and sound cvars are latched: they only take effect when the
+/// subsystem restarts. Returns true when the saved config would start the
+/// engine with a different value for one of them.
+pub fn needs_video_restart(spec: &LaunchSpec) -> bool {
+    let q3config = std::fs::read_to_string(game_home(&spec.home).join("q3config.cfg")).unwrap_or_default();
+    spec.cvars.iter().any(|(k, v)| {
+        let k = k.to_ascii_lowercase();
+        let latched = k.starts_with("r_") || k.starts_with("s_") || k == "cl_renderer";
+        latched && saved_cvar(&q3config, &k).map(|saved| saved != v.as_str()).unwrap_or(true)
+    })
+}
+
+pub fn build_args(spec: &LaunchSpec) -> Result<Vec<String>, String> {
     let home = resolve_home(&spec.home);
     let mut a: Vec<String> = vec!["+set".into(), "fs_homepath".into(), engine_arg(&home.to_string_lossy())];
     for (k, v) in [("logfile", "2"), ("wd_seq", "0")] {
@@ -83,18 +109,24 @@ pub fn build_args(spec: &LaunchSpec) -> Vec<String> {
     if cfg!(unix) {
         a.extend(["+set".into(), "com_pipefile".into(), PIPE_NAME.into()]);
     }
-    for (k, v) in &spec.cvars {
-        let (k, v) = (clean_token(k), clean_token(v));
-        if !k.is_empty() {
-            a.extend(["+set".into(), k, engine_arg(&v)]);
+    a.extend(spec.extra_args.iter().filter(|s| !s.trim().is_empty()).cloned());
+    if spec.cvars.iter().any(|(k, _)| !clean_token(k).is_empty()) {
+        a.extend(["+exec".into(), format!("{DECK_DIR}/pre.cfg")]);
+        if needs_video_restart(spec) {
+            a.push("+vid_restart".into());
         }
     }
-    a.extend(spec.extra_args.iter().filter(|s| !s.trim().is_empty()).cloned());
     if let Some(demo) = spec.demo.as_ref().filter(|d| !d.is_empty()) {
         a.extend(["+demo".into(), engine_arg(demo)]);
     }
     a.extend(["+exec".into(), format!("{DECK_DIR}/session.cfg")]);
-    a
+    // Engine limits: 1023 characters in total (it aborts beyond that) and 32 '+' commands.
+    let length: usize = a.iter().map(|s| s.len() + 3).sum();
+    let commands = a.iter().filter(|s| s.starts_with('+')).count();
+    if length > 1000 || commands > 30 {
+        return Err("The WolfcamQL command line would be too long. Shorten the extra arguments or move the demo to a shorter path.".into());
+    }
+    Ok(a)
 }
 
 fn key_bind_line(control_key: &str) -> String {
@@ -119,7 +151,15 @@ pub fn prepare_files(spec: &LaunchSpec) -> Result<PathBuf, String> {
         cfg.push_str(&key_bind_line(&spec.control_key));
     }
     cfg.push_str(&spec.config);
-    cfg.push('\n');
+    cfg.push_str("\necho WD_READY\n");
+    let mut pre = String::from("// Generated by WolfDeck: settings applied before the demo loads.\n");
+    for (k, v) in &spec.cvars {
+        let (k, v) = (clean_token(k), clean_token(v));
+        if !k.is_empty() {
+            pre.push_str(&format!("set {k} \"{v}\"\n"));
+        }
+    }
+    std::fs::write(dir.join("pre.cfg"), pre).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("session.cfg"), cfg).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("cmd.cfg"), "// no commands yet\n").map_err(|e| e.to_string())?;
     Ok(dir)
@@ -130,11 +170,12 @@ pub fn spawn(spec: &LaunchSpec) -> Result<Child, String> {
     if !exe.is_file() {
         return Err(format!("WolfcamQL executable not found: {}", spec.exe));
     }
+    let args = build_args(spec)?;
     prepare_files(spec)?;
     // Start with a fresh log so the tail only ever sees this session.
     let _ = std::fs::remove_file(game_home(&spec.home).join("qconsole.log"));
     let mut cmd = Command::new(exe);
-    cmd.args(build_args(spec))
+    cmd.args(args)
         .current_dir(exe.parent().unwrap_or(Path::new(".")))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -203,7 +244,8 @@ pub fn command_index(latest: u64) -> String {
     let first = latest.saturating_sub(BATCH_WINDOW - 1).max(1);
     let mut s = String::new();
     for n in first..=latest {
-        s.push_str(&format!("set wd_b{n} \"set wd_seq {n}; execq {DECK_DIR}/b{n}.cfg\"\niflt wd_seq {n} wd_b{n}\n"));
+        let slot = n % BATCH_WINDOW;
+        s.push_str(&format!("set wd_b{slot} \"set wd_seq {n}; execq {DECK_DIR}/b{slot}.cfg\"\niflt wd_seq {n} wd_b{slot}\n"));
     }
     s
 }
@@ -251,14 +293,19 @@ impl Session {
         let stop = Arc::new(AtomicBool::new(false));
         *self.inner.lock().unwrap() =
             Some(Running { child, home: spec.home.clone(), control_key: spec.control_key.clone(), seq: 0, stop: stop.clone() });
-        sink.emit("wolfcam-state", json!({ "running": true, "pid": pid, "demo": spec.demo }));
+        sink.emit("wolfcam-state", json!({ "running": true, "ready": false, "pid": pid, "demo": spec.demo }));
 
         let this = self.clone();
         std::thread::spawn(move || {
             let mut tail = LogTail::new(&spec.home);
+            let mut ready = false;
             loop {
                 std::thread::sleep(Duration::from_millis(150));
                 let lines = tail.poll();
+                if !ready && lines.iter().any(|l| l.starts_with("WD_READY")) {
+                    ready = true;
+                    sink.emit("wolfcam-state", json!({ "running": true, "ready": true, "pid": pid, "demo": spec.demo }));
+                }
                 publish_lines(&*sink, lines);
                 if stop.load(Ordering::Relaxed) {
                     return; // replaced or stopped; whoever did that reports the state
@@ -306,10 +353,7 @@ impl Session {
         }
         let dir = deck_dir(&r.home);
         r.seq += 1;
-        std::fs::write(dir.join(format!("b{}.cfg", r.seq)), body).map_err(|e| e.to_string())?;
-        if r.seq > BATCH_WINDOW {
-            let _ = std::fs::remove_file(dir.join(format!("b{}.cfg", r.seq - BATCH_WINDOW)));
-        }
+        write_atomic(&dir.join(format!("b{}.cfg", r.seq % BATCH_WINDOW)), &body)?;
         write_atomic(&dir.join("cmd.cfg"), &command_index(r.seq))?;
         trigger(r.child.id(), &r.home, &r.control_key)
     }
@@ -342,10 +386,12 @@ fn publish_lines(sink: &dyn Sink, mut lines: Vec<String>) {
             sink.emit("wolfcam-time", json!({ "serverTime": v }));
         }
     }
-    if lines.len() > 400 {
-        let dropped = lines.len() - 400;
-        lines.drain(200..200 + dropped);
-        lines.insert(200, format!("... {dropped} lines skipped ..."));
+    // The UI console only needs the gist when the engine floods its log.
+    const KEEP: usize = 600;
+    if lines.len() > KEEP {
+        let dropped = lines.len() - KEEP;
+        lines.drain(KEEP / 2..KEEP / 2 + dropped);
+        lines.insert(KEEP / 2, format!("... {dropped} lines skipped ..."));
     }
     sink.emit("wolfcam-log", json!(lines));
 }
@@ -425,32 +471,52 @@ mod tests {
 
     #[test]
     fn command_line_is_built_in_engine_order() {
-        let spec = LaunchSpec {
+        let home = std::env::temp_dir().join(format!("wolfdeck-args-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(GAME_DIR)).unwrap();
+        let mut spec = LaunchSpec {
             exe: "/opt/wc/wolfcamql".into(),
-            home: "/home/u/.wolfcamql".into(),
-            cvars: vec![("r_mode".into(), "-1".into()), ("bad;name".into(), "1\"; quit".into())],
+            home: home.to_string_lossy().into_owned(),
+            cvars: vec![("r_mode".into(), "-1".into()), ("cg_fov".into(), "100".into())],
             demo: Some("/demos/a+b.dm_91".into()),
             ..Default::default()
         };
-        let a = build_args(&spec);
-        assert_eq!(&a[..3], ["+set", "fs_homepath", "/home/u/.wolfcamql"]);
-        let demo_at = a.iter().position(|x| x == "+demo").unwrap();
-        let exec_at = a.iter().position(|x| x == "+exec").unwrap();
-        let mode_at = a.iter().position(|x| x == "r_mode").unwrap();
-        assert!(mode_at < demo_at && demo_at < exec_at, "cvars, then demo, then session cfg");
-        assert_eq!(a[demo_at + 1], "\"/demos/a+b.dm_91\"", "'+' must be quoted for the engine");
-        assert!(a.contains(&"badname".to_string()) && a.contains(&"1 quit".to_string()));
-        assert_eq!(a[exec_at + 1], "wolfdeck/session.cfg");
+        let a = build_args(&spec).unwrap();
+        assert_eq!(&a[..3], ["+set", "fs_homepath", spec.home.as_str()]);
+        let at = |x: &str| a.iter().position(|y| y == x).unwrap_or_else(|| panic!("missing {x} in {a:?}"));
+        assert!(at("wolfdeck/pre.cfg") < at("+vid_restart") && at("+vid_restart") < at("+demo"));
+        assert_eq!(a[at("+demo") + 1], "\"/demos/a+b.dm_91\"", "'+' must be quoted for the engine");
+        assert_eq!(a[a.len() - 2..], ["+exec", "wolfdeck/session.cfg"]);
+        assert!(!a.iter().any(|x| x == "r_mode"), "cvars travel in pre.cfg, not on the command line");
+
+        // No restart once the saved engine config already has the latched values.
+        std::fs::write(home.join(GAME_DIR).join("q3config.cfg"), "seta r_mode \"-1\"\nseta cg_fov \"90\"\n").unwrap();
+        assert!(!build_args(&spec).unwrap().contains(&"+vid_restart".to_string()));
+        spec.cvars.push(("r_picmip".into(), "0".into()));
+        assert!(build_args(&spec).unwrap().contains(&"+vid_restart".to_string()));
+
+        prepare_files(&spec).unwrap();
+        let pre = std::fs::read_to_string(home.join(GAME_DIR).join("wolfdeck/pre.cfg")).unwrap();
+        assert!(pre.contains("set r_mode \"-1\"\nset cg_fov \"100\"\nset r_picmip \"0\"\n"));
+
+        spec.demo = Some(format!("/{}.dm_91", "x".repeat(1100)));
+        assert!(build_args(&spec).is_err(), "over-long command lines are refused instead of crashing the engine");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn cvar_tokens_cannot_inject_commands() {
+        assert_eq!(clean_token("1\"; quit"), "1 quit");
+        assert_eq!(clean_token("bad;name\n"), "badname");
     }
 
     #[test]
     fn command_index_keeps_a_sliding_window() {
         let one = command_index(1);
         assert_eq!(one, "set wd_b1 \"set wd_seq 1; execq wolfdeck/b1.cfg\"\niflt wd_seq 1 wd_b1\n");
-        let many = command_index(20);
-        assert!(many.starts_with("set wd_b13 "));
-        assert_eq!(many.matches("iflt").count(), 8);
-        assert!(many.trim_end().ends_with("iflt wd_seq 20 wd_b20"));
+        let many = command_index(200);
+        assert!(many.starts_with("set wd_b9 \"set wd_seq 137; execq wolfdeck/b9.cfg\""), "oldest listed batch is 137, slot 137 % 64");
+        assert_eq!(many.matches("iflt").count(), 64);
+        assert!(many.trim_end().ends_with("iflt wd_seq 200 wd_b8"));
     }
 
     #[test]

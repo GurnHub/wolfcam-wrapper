@@ -38,6 +38,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "shortDescription": "Front end for WolfcamQL",
+    "longDescription": "Demo library, frag finder, live remote control and batch capture for WolfcamQL.",
+    "license": "GPL-2.0-or-later",
+    "category": "Video"
   }
 }

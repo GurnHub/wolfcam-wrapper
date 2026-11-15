@@ -26,22 +26,21 @@ impl Sink for Collect {
 }
 
 impl Collect {
-    fn log_has(&self, needle: &str) -> bool {
-        self.0.lock().unwrap().iter().any(|(e, p)| {
-            e == "wolfcam-log" && p.as_array().map(|a| a.iter().any(|l| l.as_str().unwrap_or("").contains(needle))).unwrap_or(false)
-        })
-    }
-    fn count_log(&self, needle: &str) -> usize {
-        self.0.lock().unwrap().iter().filter(|(e, _)| e == "wolfcam-log").map(|(_, p)| {
-            p.as_array().map(|a| a.iter().filter(|l| l.as_str().unwrap_or("").trim() == needle).count()).unwrap_or(0)
-        }).sum()
-    }
     fn times(&self) -> Vec<f64> {
         self.0.lock().unwrap().iter().filter(|(e, _)| e == "wolfcam-time").filter_map(|(_, p)| p["serverTime"].as_f64()).collect()
+    }
+    fn ready(&self) -> bool {
+        self.0.lock().unwrap().iter().any(|(e, p)| e == "wolfcam-state" && p["ready"] == true)
     }
     fn last_state(&self) -> Option<Value> {
         self.0.lock().unwrap().iter().rev().find(|(e, _)| e == "wolfcam-state").map(|(_, p)| p.clone())
     }
+}
+
+/// Number of console log lines that are exactly `needle`.
+fn log_count(home: &str, needle: &str) -> usize {
+    let log = std::path::Path::new(home).join("wolfcam-ql/qconsole.log");
+    String::from_utf8_lossy(&std::fs::read(log).unwrap_or_default()).lines().filter(|l| l.trim() == needle).count()
 }
 
 struct Env {
@@ -95,17 +94,22 @@ fn live_session_executes_each_command_batch_once() {
         control_key: String::new(),
     };
     session.launch(spec, sink.clone()).unwrap();
-    wait_for("session cfg to run", 60, || sink.log_has("WD_TEST_SESSION_CFG"));
+    // Commands sent while the engine is still loading are queued, not lost.
+    let early = session.send(&["echo WD_TEST_EARLY".into()]);
+    wait_for("engine ready", 60, || sink.ready());
+    assert_eq!(log_count(&e.home, "WD_TEST_SESSION_CFG"), 1);
     assert!(session.is_running());
 
     // Each batch must run exactly once, in order, even when sent back to back.
-    for i in 0..12 {
-        session.send(&[format!("echo WD_TEST_BATCH_{i}")]).unwrap();
+    for i in 0..40 {
+        session.send(&[format!("echo WD_TEST_BATCH_{i}"), format!("echo \"WD_TEST quoted {i}\"")]).unwrap();
     }
-    wait_for("last batch", 20, || sink.log_has("WD_TEST_BATCH_11"));
-    for i in 0..12 {
-        assert_eq!(sink.count_log(&format!("WD_TEST_BATCH_{i}")), 1, "batch {i}");
+    wait_for("last batch", 20, || log_count(&e.home, "WD_TEST_BATCH_39") > 0);
+    for i in 0..40 {
+        assert_eq!(log_count(&e.home, &format!("WD_TEST_BATCH_{i}")), 1, "batch {i}");
+        assert_eq!(log_count(&e.home, &format!("WD_TEST quoted {i}")), 1, "quoted arg {i}");
     }
+    assert_eq!(log_count(&e.home, "WD_TEST_EARLY"), 1, "early send returned {early:?}");
 
     // Seeking by server time lands where the parser says the match is.
     let target = info.game_start_time.unwrap_or(info.first_server_time) + 20_000;

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A modern front end for WolfcamQL: demo library, frag finder, live remote and batch capture"
 authors = ["WolfDeck contributors"]
 edition = "2021"
-license = "GPL-3.0-or-later"
+license = "GPL-2.0-or-later"
 
 [lib]
 name = "wolfdeck_lib"
