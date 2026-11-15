@@ -1,0 +1,298 @@
+//! Locating WolfcamQL, its home directory, Quake Live and ffmpeg, plus the
+//! pak check / sync that WolfcamQL needs before it can play Quake Live demos.
+
+use serde::Serialize;
+use std::path::{Path, PathBuf};
+
+/// Sub-directory of both the install and the home directory that holds
+/// WolfcamQL's own files (configs, videos, cameras, huds).
+pub const GAME_DIR: &str = "wolfcam-ql";
+/// Where WolfDeck keeps the files it generates inside `GAME_DIR`.
+pub const DECK_DIR: &str = "wolfdeck";
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Detected {
+    pub wolfcam_exe: Vec<String>,
+    pub wolfcam_home: String,
+    pub quake_live: Vec<String>,
+    pub demo_dirs: Vec<String>,
+    pub ffmpeg: Option<String>,
+}
+
+fn exe_names() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &["wolfcamql.exe", "wolfcamql64.exe", "ioquake3.exe"]
+    } else if cfg!(target_os = "macos") {
+        &["wolfcamqlmac", "wolfcamql"]
+    } else {
+        &["wolfcamql.x86_64", "wolfcamql", "wolfcamql.i386", "ioquake3"]
+    }
+}
+
+/// The home path WolfcamQL uses when `fs_homepath` is not set.
+pub fn default_home() -> PathBuf {
+    if cfg!(windows) {
+        dirs::config_dir().unwrap_or_default().join("wolfcamql")
+    } else if cfg!(target_os = "macos") {
+        dirs::home_dir().unwrap_or_default().join("Library/Application Support/wolfcamql")
+    } else {
+        let home = dirs::home_dir().unwrap_or_default();
+        let legacy = home.join(".wolfcamql");
+        if legacy.is_dir() {
+            legacy
+        } else {
+            dirs::data_dir().unwrap_or_else(|| home.join(".local/share")).join("wolfcamql")
+        }
+    }
+}
+
+fn steam_roots() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if cfg!(windows) {
+        for d in ["C:\\Program Files (x86)\\Steam", "C:\\Program Files\\Steam", "D:\\Steam", "D:\\SteamLibrary", "E:\\SteamLibrary"] {
+            v.push(PathBuf::from(d));
+        }
+    } else if let Some(h) = dirs::home_dir() {
+        v.push(h.join(".steam/steam"));
+        v.push(h.join(".local/share/Steam"));
+        v.push(h.join("Library/Application Support/Steam"));
+        v.push(h.join(".wine/drive_c/Program Files (x86)/Steam"));
+    }
+    v
+}
+
+pub fn find_in_path(name: &str) -> Option<PathBuf> {
+    let exe = if cfg!(windows) && !name.ends_with(".exe") { format!("{name}.exe") } else { name.to_string() };
+    std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join(&exe)).find(|c| c.is_file()))
+}
+
+pub fn detect() -> Detected {
+    let mut d = Detected { wolfcam_home: default_home().to_string_lossy().into_owned(), ..Default::default() };
+
+    let mut exe_dirs: Vec<PathBuf> = Vec::new();
+    if let Some(h) = dirs::home_dir() {
+        for sub in ["wolfcamql", "Games/wolfcamql", "Desktop/wolfcamql", "Downloads/wolfcamql", "Documents/wolfcamql"] {
+            exe_dirs.push(h.join(sub));
+        }
+    }
+    if cfg!(windows) {
+        for p in ["C:\\wolfcamql", "C:\\Games\\wolfcamql", "C:\\Program Files\\wolfcamql", "C:\\Program Files (x86)\\wolfcamql", "D:\\wolfcamql", "D:\\Games\\wolfcamql"] {
+            exe_dirs.push(PathBuf::from(p));
+        }
+    }
+    for dir in exe_dirs {
+        for n in exe_names() {
+            let c = dir.join(n);
+            if c.is_file() {
+                d.wolfcam_exe.push(c.to_string_lossy().into_owned());
+            }
+        }
+    }
+    for n in exe_names() {
+        if let Some(p) = find_in_path(n) {
+            d.wolfcam_exe.push(p.to_string_lossy().into_owned());
+        }
+    }
+
+    for root in steam_roots() {
+        let ql = root.join("steamapps/common/Quake Live");
+        if ql.join("baseq3").is_dir() {
+            d.quake_live.push(ql.to_string_lossy().into_owned());
+            // Steam keeps per-account data, including recorded demos, in <steamid64>/baseq3.
+            if let Ok(rd) = std::fs::read_dir(&ql) {
+                for e in rd.flatten() {
+                    let demos = e.path().join("baseq3/demos");
+                    if demos.is_dir() {
+                        d.demo_dirs.push(demos.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+    }
+    let home_demos = default_home().join(GAME_DIR).join("demos");
+    if home_demos.is_dir() {
+        d.demo_dirs.push(home_demos.to_string_lossy().into_owned());
+    }
+    d.ffmpeg = find_in_path("ffmpeg").map(|p| p.to_string_lossy().into_owned());
+    d
+}
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallStatus {
+    pub exe_ok: bool,
+    pub base_dir: String,
+    pub home: String,
+    pub game_dir_ok: bool,
+    /// pk3 files found in the install's and the home's baseq3.
+    pub paks: Vec<String>,
+    /// True when the core Quake Live pak (pak00.pk3) is available to WolfcamQL.
+    pub has_core_pak: bool,
+    /// pk3 files in the Quake Live install that WolfcamQL does not have yet.
+    pub missing_paks: Vec<String>,
+    pub ql_ok: bool,
+    pub problems: Vec<String>,
+}
+
+fn pk3s(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.path().extension().map(|x| x.eq_ignore_ascii_case("pk3")).unwrap_or(false))
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+pub fn resolve_home(home: &str) -> PathBuf {
+    if home.trim().is_empty() { default_home() } else { PathBuf::from(home.trim()) }
+}
+
+pub fn check_install(exe: &str, home: &str, ql_path: &str) -> InstallStatus {
+    let mut s = InstallStatus::default();
+    let exe_path = Path::new(exe);
+    s.exe_ok = !exe.is_empty() && exe_path.is_file();
+    let home = resolve_home(home);
+    s.home = home.to_string_lossy().into_owned();
+    if !s.exe_ok {
+        s.problems.push("WolfcamQL executable not found. Set its location in Settings.".into());
+        return s;
+    }
+    let base = exe_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    s.base_dir = base.to_string_lossy().into_owned();
+    s.game_dir_ok = base.join(GAME_DIR).is_dir();
+    if !s.game_dir_ok {
+        s.problems.push(format!("No '{GAME_DIR}' folder next to the executable; this does not look like a WolfcamQL install."));
+    }
+    let mut have: Vec<String> = pk3s(&base.join("baseq3"));
+    have.extend(pk3s(&home.join("baseq3")));
+    have.sort();
+    have.dedup();
+    s.has_core_pak = have.iter().any(|p| p.eq_ignore_ascii_case("pak00.pk3") || p.eq_ignore_ascii_case("pak0.pk3"));
+    let ql_base = Path::new(ql_path).join("baseq3");
+    s.ql_ok = !ql_path.is_empty() && ql_base.is_dir();
+    if s.ql_ok {
+        s.missing_paks = pk3s(&ql_base).into_iter().filter(|p| !have.iter().any(|h| h.eq_ignore_ascii_case(p))).collect();
+    }
+    if !s.has_core_pak {
+        s.problems.push(if s.ql_ok {
+            "Quake Live paks have not been copied into WolfcamQL's baseq3 yet. Use Sync paks.".into()
+        } else {
+            "WolfcamQL has no Quake Live paks in baseq3 and no Quake Live install is configured.".into()
+        });
+    } else if !s.missing_paks.is_empty() {
+        s.problems.push(format!("{} pak file(s) from Quake Live are not in WolfcamQL yet (maps may be missing).", s.missing_paks.len()));
+    }
+    s.paks = have;
+    s
+}
+
+/// Copies pk3 files that WolfcamQL is missing from the Quake Live install
+/// into `<wolfcam>/baseq3`, falling back to `<home>/baseq3` when the install
+/// directory is not writable. Returns the names that were copied.
+pub fn sync_paks(exe: &str, home: &str, ql_path: &str) -> Result<Vec<String>, String> {
+    let status = check_install(exe, home, ql_path);
+    if !status.exe_ok {
+        return Err("WolfcamQL executable not found".into());
+    }
+    if !status.ql_ok {
+        return Err("Quake Live folder not found (it must contain baseq3)".into());
+    }
+    let src = Path::new(ql_path).join("baseq3");
+    let mut dest = Path::new(&status.base_dir).join("baseq3");
+    if std::fs::create_dir_all(&dest).is_err() || std::fs::write(dest.join(".wolfdeck-write-test"), b"").is_err() {
+        dest = resolve_home(home).join("baseq3");
+        std::fs::create_dir_all(&dest).map_err(|e| format!("cannot create {}: {e}", dest.display()))?;
+    } else {
+        let _ = std::fs::remove_file(dest.join(".wolfdeck-write-test"));
+    }
+    let mut copied = Vec::new();
+    for name in status.missing_paks {
+        std::fs::copy(src.join(&name), dest.join(&name)).map_err(|e| format!("copying {name}: {e}"))?;
+        copied.push(name);
+    }
+    Ok(copied)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameFile {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    pub modified: u64,
+}
+
+/// Lists files with one of `exts` in `<base>/wolfcam-ql/<sub>` and `<home>/wolfcam-ql/<sub>`.
+pub fn list_game_files(exe: &str, home: &str, sub: &str, exts: &[&str]) -> Vec<GameFile> {
+    let mut out: Vec<GameFile> = Vec::new();
+    let mut roots = vec![resolve_home(home).join(GAME_DIR)];
+    if let Some(base) = Path::new(exe).parent() {
+        roots.push(base.join(GAME_DIR));
+    }
+    for root in roots {
+        let dir = if sub.is_empty() { root } else { root.join(sub) };
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
+            if !p.is_file() || !exts.contains(&ext.as_str()) {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            if out.iter().any(|f| f.name == name) {
+                continue; // the home copy shadows the install copy, as in the engine
+            }
+            let md = e.metadata().ok();
+            out.push(GameFile {
+                name,
+                path: p.to_string_lossy().into_owned(),
+                size: md.as_ref().map(|m| m.len()).unwrap_or(0),
+                modified: md
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_check_and_pak_sync() {
+        let t = std::env::temp_dir().join(format!("wolfdeck-paths-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        let wc = t.join("wolfcam");
+        let ql = t.join("ql");
+        let home = t.join("home");
+        std::fs::create_dir_all(wc.join(GAME_DIR)).unwrap();
+        std::fs::create_dir_all(ql.join("baseq3")).unwrap();
+        std::fs::write(wc.join("wolfcamql"), b"x").unwrap();
+        std::fs::write(ql.join("baseq3/pak00.pk3"), b"pak").unwrap();
+        std::fs::write(ql.join("baseq3/bin.pk3"), b"bin").unwrap();
+        let exe = wc.join("wolfcamql").to_string_lossy().into_owned();
+        let (h, q) = (home.to_string_lossy().into_owned(), ql.to_string_lossy().into_owned());
+
+        let s = check_install(&exe, &h, &q);
+        assert!(s.exe_ok && s.game_dir_ok && s.ql_ok);
+        assert!(!s.has_core_pak);
+        assert_eq!(s.missing_paks, vec!["bin.pk3", "pak00.pk3"]);
+
+        let copied = sync_paks(&exe, &h, &q).unwrap();
+        assert_eq!(copied.len(), 2);
+        let s = check_install(&exe, &h, &q);
+        assert!(s.has_core_pak && s.missing_paks.is_empty() && s.problems.is_empty());
+        assert!(!check_install("", &h, &q).exe_ok);
+        let _ = std::fs::remove_dir_all(&t);
+    }
+}
