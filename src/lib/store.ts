@@ -280,7 +280,12 @@ export const useStore = create<State>((set, get) => ({
         // Playback starts now; restart the position estimate from the launch position.
         set({ playhead: { ...get().playhead, baseWall: performance.now() } });
       }
-      if (!st.running) set({ playingDemo: null });
+      if (!st.running) {
+        set({ playingDemo: null });
+        if (prev.running && !prev.ready && st.exitCode !== undefined) {
+          get().toast("error", "WolfcamQL closed before the demo had loaded. Check its location and pak files in Settings; the last console lines are in wolfcam-ql/qconsole.log.");
+        }
+      }
     });
     await b.listen<string[]>("wolfcam-log", (lines) => set({ log: [...get().log, ...lines].slice(-1500) }));
     await b.listen<{ serverTime: number }>("wolfcam-time", (t) => {

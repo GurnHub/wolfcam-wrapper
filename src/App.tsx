@@ -19,7 +19,18 @@ const NAV: { id: View; label: string; icon: typeof FolderOpen }[] = [
 ];
 
 export default function App() {
-  const s = useStore();
+  // Select only what the shell shows, so frequent updates (engine log) do not re-render every view.
+  const ready = useStore((x) => x.ready);
+  const view = useStore((x) => x.view);
+  const clips = useStore((x) => x.clips);
+  const rendering = useStore((x) => x.rendering);
+  const wolfcam = useStore((x) => x.wolfcam);
+  const playingDemo = useStore((x) => x.playingDemo);
+  const toasts = useStore((x) => x.toasts);
+  const install = useStore((x) => x.install);
+  const mock = useStore((x) => x.mock);
+  const { setView, stop, dismissToast } = useStore.getState();
+  const s = { ready, view, clips, rendering, wolfcam, playingDemo, toasts, install, mock, setView, stop, dismissToast };
   useEffect(() => {
     void useStore.getState().init();
   }, []);

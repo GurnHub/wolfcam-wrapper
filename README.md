@@ -6,6 +6,14 @@ WolfDeck does not include or modify WolfcamQL. It starts the WolfcamQL you alrea
 
 Built with [Tauri 2](https://tauri.app) (Rust backend, React + TypeScript UI). Runs on Windows, Linux and macOS.
 
+![Library with the detail panel of a demo](docs/library.png)
+
+| Player | Frag finder | Clips & render |
+| --- | --- | --- |
+| ![Player](docs/player.png) | ![Frag finder](docs/frags.png) | ![Clips and render](docs/clips.png) |
+
+Screenshots show the built-in sample data.
+
 ## Features
 
 **Library**
