@@ -4,7 +4,7 @@ A desktop front end for [WolfcamQL](https://github.com/brugal/wolfcamql), the Qu
 
 WolfDeck does not include or modify WolfcamQL. It starts the WolfcamQL you already have and drives it through its command line, config files and console commands.
 
-Built with [Tauri 2](https://tauri.app) (Rust backend, React + TypeScript UI). Runs on Windows, Linux and macOS.
+Built with [Tauri 2](https://tauri.app) (Rust backend, React + TypeScript UI). Runs on Windows and Linux.
 
 ![Library with the detail panel of a demo](docs/library.png)
 
@@ -71,11 +71,11 @@ Screenshots show the built-in sample data.
 
 - WolfcamQL 12 or newer, with the Quake Live pak files in its `baseq3` (WolfDeck can copy them from a Quake Live install).
 - ffmpeg, only if you want renders encoded to MP4/MOV/MKV.
-- Windows 10/11 (WebView2, preinstalled on current Windows), Linux with WebKitGTK 4.1, or macOS.
+- Windows 10/11 (WebView2, preinstalled on current Windows) or Linux with WebKitGTK 4.1. macOS is not supported.
 
 ## Getting it
 
-Every push builds installers for Windows, Linux and macOS in GitHub Actions (workflow `build`); download them from the run's artifacts.
+Download the installer for Windows or Linux from the [Releases](https://github.com/GurnHub/wolfcam-wrapper/releases) page. Releases are built by the `release` workflow, started either by pushing a version tag (for example `v0.1.0-alpha.1`) or from the Actions tab with the tag to create; the release text comes from `docs/releases/<tag>.md`. Every other push also builds installers in the `build` workflow, available as that run's artifacts.
 
 To build it yourself you need Node 20+ and Rust, plus the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your platform:
 
@@ -101,7 +101,7 @@ WolfcamQL has no remote-control interface, so WolfDeck uses what the engine prov
 
 - **Launch**: the command line only carries the home path, the demo and two `exec`s. The config profile and capture settings go into `wolfdeck/pre.cfg`, executed before the demo loads; start-up commands (seek, point of view, a profile's extra commands) go into `wolfdeck/session.cfg`, which runs once the demo has loaded. (The engine limits its command line to 1023 characters.)
 - **Live commands**: each batch of commands is written to a small cfg file listed in `wolfdeck/cmd.cfg`, guarded by a sequence number so a batch runs exactly once. The engine is then told to execute `cmd.cfg`:
-  - on Linux and macOS through the engine's command pipe (`com_pipefile`);
+  - on Linux through the engine's command pipe (`com_pipefile`);
   - on Windows, where the engine has no pipe or stdin console, by posting a key press to the WolfcamQL window. WolfDeck binds that key (default F13, changeable in Settings) to `execq wolfdeck/cmd.cfg`.
 - **Feedback**: WolfcamQL is started with `logfile 2`, and WolfDeck reads `qconsole.log`.
 - **Renders**: a clip is recorded with the engine's own timed commands (`seekservertime`, `at <time> video …`, `at <time> stopvideo`, `at <time> quit`), using demo server times taken from WolfDeck's parser.
@@ -117,7 +117,7 @@ Things to know:
 
 - The Rust backend has unit tests, plus parser tests against an excerpt of a real Quake Live demo. Kill counts and match start/end times were compared with WolfcamQL's own demo pre-parse on full demos (protocols 68 and 73).
 - `src-tauri/tests/engine.rs` drives a real WolfcamQL: live command delivery (each batch exactly once), seeking by server time, capture and ffmpeg encode, camera points (add, undo, edit, path type), looping, demo cutting, screenshots, a custom HUD, a video restart mid-demo, and key binds (applied at launch, changed while running, triggered by a real key press, read back from the engine's config). It was run on Linux against WolfcamQL 12.7test53 built from source. It is skipped unless the `WOLFDECK_TEST_*` variables described in that file are set.
-- Not yet verified on real hardware: the Windows key-press command channel (it compiles in CI, but has not been exercised against WolfcamQL on Windows), macOS, and demos of protocol 90 and 91 (the field tables follow the WolfcamQL source, but no sample demos were available).
+- Not yet verified on real hardware: the Windows key-press command channel (it compiles in CI, but has not been exercised against WolfcamQL on Windows), and demos of protocol 90 and 91 (the field tables follow the WolfcamQL source, but no sample demos were available).
 
 ## Licence
 

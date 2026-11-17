@@ -24,9 +24,6 @@ jobs:
             artifact: |
               src-tauri/target/release/bundle/deb/*.deb
               src-tauri/target/release/bundle/appimage/*.AppImage
-          - os: macos-latest
-            bundles: dmg
-            artifact: src-tauri/target/release/bundle/dmg/*.dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
