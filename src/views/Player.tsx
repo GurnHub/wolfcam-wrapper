@@ -7,7 +7,7 @@ import { Timeline } from "../components/Timeline";
 import { Button, Empty, Toggle } from "../components/ui";
 import { backend, invoke, type DemoInfo, type GameFile } from "../lib/backend";
 import { clipFromRange } from "../lib/clips";
-import { baseName, clock, stripExt, uid } from "../lib/format";
+import { baseName, clock, parseClock, stripExt, uid } from "../lib/format";
 import { NAME_POSITIONS, namePositionValues } from "../lib/cvars";
 import { useStore, type CameraSettings } from "../lib/store";
 
@@ -97,6 +97,20 @@ export function PlayerView() {
 
   const [video, setVideo] = useState(false);
   const [cut, setCut] = useState(false);
+  const [goTo, setGoTo] = useState("");
+  const goToClock = () => {
+    const c = parseClock(goTo);
+    if (!c || !info) return st.toast("error", "Type a game clock time such as 10:21, or w1:30 for warmup.");
+    const t = c.warmup ? info.firstServerTime + c.ms : (info.gameStartTime ?? info.firstServerTime) + c.ms;
+    if (t > info.lastServerTime) return st.toast("error", `The demo ends at ${label(info, info.lastServerTime)}.`);
+    seekTo(t);
+    setGoTo("");
+  };
+  // Round seeks happen in the engine, so ask it where it landed afterwards.
+  const round = (dir: "next" | "prev") => {
+    void cmd(`seek${dir}round`);
+    setTimeout(() => void cmd("servertime"), 500);
+  };
 
   // Keyboard shortcuts while the Player view is open.
   useEffect(() => {
@@ -111,6 +125,8 @@ export function PlayerView() {
       else if (e.key === "o") s.setMarks(s.markIn, s.position());
       else return;
       e.preventDefault();
+      // Otherwise the key also activates whichever button was clicked last.
+      if (t.tagName === "BUTTON") t.blur();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -190,6 +206,9 @@ export function PlayerView() {
               <Button onClick={() => jump(1)} title="Next kill"><ChevronsRight size={15} /></Button>
             </div>
             {info && <Readout info={info} />}
+            <form className="goto" onSubmit={(e) => { e.preventDefault(); goToClock(); }}>
+              <input value={goTo} onChange={(e) => setGoTo(e.target.value)} placeholder="Go to 10:21" aria-label="Go to game clock time" spellCheck={false} />
+            </form>
             <div className="btn-group" role="group" aria-label="Playback speed">
               {SPEEDS.map((sp) => (
                 <Button key={sp} small active={playhead.timescale === sp} onClick={() => setTimescale(sp)} title={sp === 1 ? "Real time" : sp === 100 ? "Fast scan" : undefined}>
@@ -205,6 +224,10 @@ export function PlayerView() {
               <Button small variant="primary" disabled={!marked} onClick={addMarked}>
                 <Scissors size={13} /> Add clip{marked ? ` (${clock(markOut - markIn, true)})` : ""}
               </Button>
+            </div>
+            <div className="btn-group">
+              <Button small onClick={() => round("prev")} title="Previous round (round-based modes such as CA)">◂ Round</Button>
+              <Button small onClick={() => round("next")} title="Next round (round-based modes such as CA)">Round ▸</Button>
             </div>
             <Button small active={looping} disabled={!marked && !looping} onClick={() => st.toggleLoop()} title="Play the marked range over and over">
               <Repeat size={13} /> {looping ? "Stop loop" : "Loop marks"}
@@ -227,7 +250,8 @@ export function PlayerView() {
               variant={video ? "danger" : "default"}
               title="Record video of what is playing right now, with WolfcamQL's current video settings"
               onClick={() => {
-                void cmd(video ? "stopvideo" : `video avi name live_${stamp()}`);
+                // Pausing should pause the recording too, not fill it with a frozen picture.
+                void cmd(...(video ? ["stopvideo"] : ["set cl_freezeDemoPauseVideoRecording 1", `video avi name live_${stamp()}`]));
                 setVideo(!video);
               }}
             >

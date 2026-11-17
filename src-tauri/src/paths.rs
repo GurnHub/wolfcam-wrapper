@@ -260,7 +260,7 @@ pub fn list_game_files(exe: &str, home: &str, sub: &str, exts: &[&str]) -> Vec<G
             });
         }
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|f| f.name.to_lowercase());
     out
 }
 
@@ -341,6 +341,67 @@ pub fn read_binds(home: &str) -> Result<Vec<(String, String)>, String> {
     Ok(parse_binds(&String::from_utf8_lossy(&text)))
 }
 
+/// Maps (lower-case names, e.g. "campgrounds") found in the given pk3
+/// files and in loose `maps/*.bsp` files of the given folders.
+fn maps_in(dirs: &[PathBuf], pk3s: &[PathBuf]) -> std::collections::BTreeSet<String> {
+    let mut maps = std::collections::BTreeSet::new();
+    let mut add = |entry: &str| {
+        let e = entry.replace('\\', "/").to_ascii_lowercase();
+        if let Some(name) = e.strip_prefix("maps/").and_then(|n| n.strip_suffix(".bsp")) {
+            if !name.contains('/') && !name.is_empty() {
+                maps.insert(name.to_string());
+            }
+        }
+    };
+    for pk3 in pk3s {
+        // Only the zip directory is read, not the contents.
+        let Ok(file) = std::fs::File::open(pk3) else { continue };
+        let Ok(archive) = zip::ZipArchive::new(std::io::BufReader::new(file)) else { continue };
+        for name in archive.file_names() {
+            add(name);
+        }
+    }
+    for dir in dirs {
+        if let Ok(rd) = std::fs::read_dir(dir.join("maps")) {
+            for e in rd.flatten() {
+                add(&format!("maps/{}", e.file_name().to_string_lossy()));
+            }
+        }
+    }
+    maps
+}
+
+/// The maps WolfcamQL can load: its own `baseq3` and `wolfcam-ql` folders
+/// (install and home), its workshop download folder, and Quake Live's Steam
+/// Workshop content, which WolfcamQL also searches.
+pub fn installed_maps(exe: &str, home: &str, ql_path: &str) -> Vec<String> {
+    let home = resolve_home(home);
+    let mut dirs: Vec<PathBuf> = vec![home.join("baseq3"), home.join(GAME_DIR)];
+    if let Some(base) = Path::new(exe).parent().filter(|_| !exe.is_empty()) {
+        dirs.push(base.join("baseq3"));
+        dirs.push(base.join(GAME_DIR));
+    }
+    let mut pk3s: Vec<PathBuf> = Vec::new();
+    let mut take_pk3s = |dir: &Path, depth: usize| {
+        for e in walkdir::WalkDir::new(dir).max_depth(depth).into_iter().flatten() {
+            if e.file_type().is_file() && e.path().extension().map(|x| x.eq_ignore_ascii_case("pk3")).unwrap_or(false) {
+                pk3s.push(e.into_path());
+            }
+        }
+    };
+    for d in &dirs {
+        take_pk3s(d, 1);
+    }
+    take_pk3s(&home.join("workshop"), 3);
+    if !ql_path.trim().is_empty() {
+        // <steam>/steamapps/common/Quake Live -> <steam>/steamapps/workshop/content/282440
+        if let Some(steamapps) = Path::new(ql_path.trim()).parent().and_then(|p| p.parent()) {
+            take_pk3s(&steamapps.join("workshop/content/282440"), 2);
+        }
+    }
+    maps_in(&dirs, &pk3s).into_iter().collect()
+}
+
 /// Bytes available to the current user on the volume holding `path`.
 pub fn disk_free(path: &Path) -> Option<u64> {
     let mut p = path;
@@ -379,6 +440,34 @@ mod tests {
         let s = check_install(&exe, &h, &q);
         assert!(s.has_core_pak && s.missing_paks.is_empty() && s.problems.is_empty());
         assert!(!check_install("", &h, &q).exe_ok);
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn maps_are_found_in_pk3s_and_folders() {
+        use std::io::Write;
+        let t = std::env::temp_dir().join(format!("wolfdeck-maps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        let home = t.join("home");
+        let base = t.join("wc");
+        let ql = t.join("steam/steamapps/common/Quake Live");
+        for d in [home.join("baseq3"), base.join(GAME_DIR).join("maps"), ql.clone(), t.join("steam/steamapps/workshop/content/282440/12345")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let write_pk3 = |path: PathBuf, entries: &[&str]| {
+            let mut z = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+            for e in entries {
+                z.start_file(*e, zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();
+                z.write_all(b"x").unwrap();
+            }
+            z.finish().unwrap();
+        };
+        write_pk3(home.join("baseq3/pak00.pk3"), &["maps/Campgrounds.bsp", "maps/bloodrun.bsp", "textures/x.tga", "maps/sub/no.bsp"]);
+        write_pk3(t.join("steam/steamapps/workshop/content/282440/12345/w.pk3"), &["maps/workshopmap.bsp"]);
+        std::fs::write(base.join(GAME_DIR).join("maps/looseone.bsp"), b"x").unwrap();
+        std::fs::write(base.join("wolfcamql"), b"x").unwrap();
+        let maps = installed_maps(&base.join("wolfcamql").to_string_lossy(), &home.to_string_lossy(), &ql.to_string_lossy());
+        assert_eq!(maps, vec!["bloodrun", "campgrounds", "looseone", "workshopmap"]);
         let _ = std::fs::remove_dir_all(&t);
     }
 

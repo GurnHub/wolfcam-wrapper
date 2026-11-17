@@ -40,6 +40,10 @@ export function LibraryView() {
   const [map, setMap] = useState("");
   const [tag, setTag] = useState("");
   const [favOnly, setFavOnly] = useState(false);
+  const [missingOnly, setMissingOnly] = useState(false);
+  const installedMaps = useStore((s) => s.installedMaps);
+  const mapMissing = (d: DemoEntry) => !!installedMaps && !!d.map && !d.error && !installedMaps.has(d.map.toLowerCase());
+  const missingCount = useMemo(() => demos.filter(mapMissing).length, [demos, installedMaps]); // eslint-disable-line react-hooks/exhaustive-deps
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "date", dir: -1 });
   const anchor = useRef<string | null>(null);
 
@@ -54,6 +58,7 @@ export function LibraryView() {
       if (map && d.map !== map) return false;
       const m = meta[d.path];
       if (favOnly && !m?.favorite) return false;
+      if (missingOnly && !mapMissing(d)) return false;
       if (tag && !m?.tags?.includes(tag)) return false;
       if (!words.length) return true;
       const hay = `${d.fileName} ${d.map} ${d.gametypeName} ${d.hostname} ${d.players.join(" ")} ${m?.tags?.join(" ") ?? ""} ${m?.notes ?? ""}`.toLowerCase();
@@ -64,7 +69,7 @@ export function LibraryView() {
       return (x < y ? -1 : x > y ? 1 : a.path.localeCompare(b.path)) * sort.dir;
     });
     return out;
-  }, [demos, meta, query, mode, map, tag, favOnly, sort]);
+  }, [demos, meta, query, mode, map, tag, favOnly, missingOnly, installedMaps, sort]);
 
   const parent = useRef<HTMLDivElement>(null);
   const virt = useVirtualizer({ count: rows.length, getScrollElement: () => parent.current, estimateSize: () => 30, overscan: 12 });
@@ -81,7 +86,7 @@ export function LibraryView() {
   };
 
   const current = selected.length === 1 ? demos.find((d) => d.path === selected[0]) : undefined;
-  const filtered = !!(query || mode || map || tag || favOnly);
+  const filtered = !!(query || mode || map || tag || favOnly || missingOnly);
 
   if (!settings.demoDirs.length) {
     return (
@@ -121,6 +126,11 @@ export function LibraryView() {
           <Button active={favOnly} onClick={() => setFavOnly(!favOnly)} title="Show favourites only">
             <Star size={14} fill={favOnly ? "currentColor" : "none"} />
           </Button>
+          {missingCount > 0 && (
+            <Button active={missingOnly} onClick={() => setMissingOnly(!missingOnly)} title={`${missingCount} demo${missingCount === 1 ? "" : "s"} use a map WolfcamQL does not have; show only those`}>
+              <TriangleAlert size={14} /> Map missing ({missingCount})
+            </Button>
+          )}
           <span className="spacer" />
           <span className="muted">
             {scanning ? `Indexing ${scanning.done}/${scanning.total || "…"}` : `${rows.length}${filtered ? ` of ${demos.length}` : ""} demos`}
@@ -178,7 +188,7 @@ export function LibraryView() {
                       <small>.{d.fileName.split(".").pop()}</small>
                       {m?.tags?.map((t) => <i key={t} className="tag">{t}</i>)}
                     </span>
-                    <span>{d.map}</span>
+                    <span className={mapMissing(d) ? "map-missing" : ""} title={mapMissing(d) ? "WolfcamQL does not have this map" : undefined}>{d.map}</span>
                     <span>{d.gametypeName}</span>
                     <span>{d.povName}</span>
                     <span className="muted">{dateTime(d.timestamp ?? d.modified)}</span>
@@ -203,6 +213,17 @@ export function LibraryView() {
         )}
       </aside>
     </div>
+  );
+}
+
+function MapNotice({ map }: { map: string }) {
+  const installedMaps = useStore((s) => s.installedMaps);
+  if (!installedMaps || !map || installedMaps.has(map.toLowerCase())) return null;
+  return (
+    <p className="notice notice-bad">
+      WolfcamQL does not have the map <b>{map}</b>, so it would show a grey void. Use <b>Sync paks</b> in Settings to copy Quake Live's maps, or set
+      SteamCMD in Settings so WolfcamQL can download Steam Workshop maps itself.
+    </p>
   );
 }
 
@@ -302,6 +323,7 @@ function DemoDetail({ demo }: { demo: DemoEntry }) {
 
       {demo.error && <p className="notice notice-bad">{demo.error}</p>}
       {demo.warning && <p className="notice">This demo is incomplete ({demo.warning}); everything up to that point is usable.</p>}
+      <MapNotice map={demo.map} />
 
       <div className="actions">
         <Button variant="primary" disabled={!!demo.error} onClick={() => void play(demo.path)}><Play size={14} /> Play</Button>

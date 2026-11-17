@@ -3,7 +3,7 @@ import {
   backend, invoke,
   type DemoEntry, type DemoInfo, type Detected, type InstallStatus, type LaunchSpec, type RenderJob, type RenderUpdate, type WolfcamState,
 } from "./backend";
-import { baseName, stripExt, uid } from "./format";
+import { baseName, safeName, stripExt, uid } from "./format";
 import { bindCommands, normalizeBinds, WOLFDECK_LAYOUT, type BindMap } from "./keys";
 import {
   captureCvars, defaultCapturePresets, defaultEncodePresets, encodeArgs, parseCvarLines, videoArgs,
@@ -27,6 +27,10 @@ export interface Settings {
   /** Seconds the engine plays before recording starts. */
   capturePreRoll: number;
   deleteSource: boolean;
+  /** Encode while recording through WolfcamQL's ffmpeg pipe instead of writing an AVI first. */
+  encodeLive: boolean;
+  /** SteamCMD executable, used by WolfcamQL to download Steam Workshop maps a demo needs. */
+  steamcmdPath: string;
   activeProfile: string;
   capturePreset: string;
   encodePreset: string;
@@ -75,6 +79,10 @@ export interface Clip {
   pov: number | null;
   povName: string;
   label: string;
+  /** Game speed while recording (slow motion below 1). Missing means real time. */
+  speed?: number;
+  /** Extra console commands for this clip, run after the demo has loaded. */
+  commands?: string;
   render?: RenderUpdate;
 }
 
@@ -120,7 +128,7 @@ export interface Playhead {
 
 const defaultSettings: Settings = {
   wolfcamExe: "", wolfcamHome: "", qlPath: "", demoDirs: [], outputDir: "", ffmpegPath: "", extraArgs: "", controlKey: "F13",
-  clipLeadIn: 5, clipLeadOut: 3, capturePreRoll: 3, deleteSource: false,
+  clipLeadIn: 5, clipLeadOut: 3, capturePreRoll: 3, deleteSource: false, encodeLive: false, steamcmdPath: "",
   activeProfile: "viewing", capturePreset: "hq1080", encodePreset: "h264",
   viewFullscreen: false, viewWidth: 1600, viewHeight: 900, setupDone: false,
   camera: { touched: false, type: "splineBezier", freecamSpeed: 400, sensitivity: 0.1, pointInfo: true, drawPath: true },
@@ -160,6 +168,8 @@ interface State {
 
   detected: Detected | null;
   install: InstallStatus | null;
+  /** Maps WolfcamQL can load (lower case); null until read. */
+  installedMaps: Set<string> | null;
   ffmpegVersion: string | null;
 
   demos: DemoEntry[];
@@ -227,6 +237,7 @@ interface State {
 }
 
 let initStarted = false;
+let installCheck = 0;
 const saveTimers: Record<string, ReturnType<typeof setTimeout>> = {};
 function persist(name: string, value: unknown) {
   clearTimeout(saveTimers[name]);
@@ -243,6 +254,13 @@ async function load<T>(name: string, fallback: T): Promise<T> {
     console.error("load failed", name, e);
     return fallback;
   }
+}
+
+/** Settings that apply to every WolfcamQL start, demo or render. */
+function baseCvars(s: Settings): [string, string][] {
+  const c: [string, string][] = [];
+  if (s.steamcmdPath.trim()) c.push(["fs_steamcmd", s.steamcmdPath.trim()], ["cl_downloadWorkshops", "1"]);
+  return c;
 }
 
 function splitArgs(s: string): string[] {
@@ -277,6 +295,7 @@ export const useStore = create<State>((set, get) => ({
   keys: { enabled: false, binds: { ...WOLFDECK_LAYOUT }, previous: null },
   detected: null,
   install: null,
+  installedMaps: null,
   ffmpegVersion: null,
   demos: [],
   scanning: null,
@@ -376,10 +395,17 @@ export const useStore = create<State>((set, get) => ({
   },
 
   async refreshInstall() {
+    // Only the newest check may write its result; an older one can finish later.
+    const run = ++installCheck;
     const s = get().settings;
     const install = await invoke<InstallStatus>("check_install", { exe: s.wolfcamExe, home: s.wolfcamHome, qlPath: s.qlPath }).catch(() => null);
     const ffmpegVersion = await invoke<string>("ffmpeg_version", { path: s.ffmpegPath }).catch(() => null);
+    if (run !== installCheck) return;
     set({ install, ffmpegVersion });
+    const maps = await invoke<string[]>("installed_maps", { exe: s.wolfcamExe, home: s.wolfcamHome, qlPath: s.qlPath }).catch(() => null);
+    if (run !== installCheck) return;
+    // An empty list means the paks could not be read at all; do not flag every demo then.
+    set({ installedMaps: maps && maps.length ? new Set(maps) : null });
   },
 
   async rescan(force = false) {
@@ -443,6 +469,7 @@ export const useStore = create<State>((set, get) => ({
         ["r_customwidth", String(s.viewWidth)],
         ["r_customheight", String(s.viewHeight)],
         ...profile.cvars,
+        ...baseCvars(s),
       ],
       demo: path,
       config,
@@ -522,9 +549,12 @@ export const useStore = create<State>((set, get) => ({
 
   position() {
     const p = get().playhead;
-    const { wolfcam } = get();
+    const { wolfcam, playingDemo, demoInfo } = get();
     if (p.paused || !wolfcam.ready) return p.baseTime;
-    return p.baseTime + (performance.now() - p.baseWall) * p.timescale;
+    const t = p.baseTime + (performance.now() - p.baseWall) * p.timescale;
+    // Playback stops at the end of the demo.
+    const last = playingDemo ? demoInfo[playingDemo]?.lastServerTime : undefined;
+    return last != null ? Math.min(t, last) : t;
   },
 
   seekTo(serverTime) {
@@ -555,7 +585,7 @@ export const useStore = create<State>((set, get) => ({
     void get().cmd(`follow ${client ?? -1}`);
   },
 
-  setMarks: (markIn, markOut) => set({ markIn, markOut }),
+  setMarks: (markIn, markOut) => set({ markIn: markIn == null ? null : Math.round(markIn), markOut: markOut == null ? null : Math.round(markOut) }),
 
   addClip(c) {
     const clips = [...get().clips, { ...c, id: uid() }];
@@ -630,21 +660,25 @@ export const useStore = create<State>((set, get) => ({
     if (!s.wolfcamExe) return get().toast("error", "Set the WolfcamQL location in Settings first.");
     const encodes = enc && enc.id !== "none" && capture.format.startsWith("avi");
     if (encodes && !get().ffmpegVersion) return get().toast("error", "ffmpeg was not found. Set its location in Settings or choose \"Keep the AVI\".");
+    const live = encodes && s.encodeLive;
+    const encodeSpec = encodes ? { ffmpeg: s.ffmpegPath, args: encodeArgs(enc, capture.fps), extension: enc.extension, outputDir: s.outputDir, deleteSource: s.deleteSource } : null;
+    // Names are compared as the files will be named, so two clips never write the same file.
     const names = new Set<string>();
     const jobs: RenderJob[] = chosen.map((c) => {
-      let name = c.name.trim() || stripExt(baseName(c.demo));
-      for (let n = 2; names.has(name.toLowerCase()); n++) name = `${c.name}-${n}`;
+      const base = safeName(c.name.trim() || stripExt(baseName(c.demo)));
+      let name = base;
+      for (let n = 2; names.has(name.toLowerCase()); n++) name = `${base}_${n}`;
       names.add(name.toLowerCase());
       return {
         id: c.id, demo: c.demo, name, startTime: c.startTime, endTime: c.endTime, pov: c.pov,
         preRollMs: Math.round(s.capturePreRoll * 1000),
         // Capture settings win over the profile's renderer settings.
-        cvars: [...profile.cvars.filter(([k]) => !/^r_(mode|customwidth|customheight|fullscreen)$/i.test(k)), ...captureCvars(capture)],
-        config: profile.config,
+        cvars: [...profile.cvars.filter(([k]) => !/^r_(mode|customwidth|customheight|fullscreen)$/i.test(k)), ...captureCvars(capture), ...baseCvars(s)],
+        config: profile.config + (c.commands?.trim() ? c.commands.trim() + "\n" : ""),
         videoArgs: videoArgs(capture),
-        encode: encodes
-          ? { ffmpeg: s.ffmpegPath, args: encodeArgs(enc, capture.fps), extension: enc.extension, outputDir: s.outputDir, deleteSource: s.deleteSource }
-          : null,
+        encode: live ? null : encodeSpec,
+        pipe: live ? encodeSpec : null,
+        speed: c.speed && c.speed > 0 ? c.speed : 1,
       };
     });
     set({

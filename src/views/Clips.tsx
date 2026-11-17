@@ -1,8 +1,8 @@
 import { Clapperboard, Copy, FolderOpen, Play, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button, Empty, Field, Modal, Progress, Toggle } from "../components/ui";
-import { backend, invoke } from "../lib/backend";
-import { baseName, duration, fileSize, stripExt, uid } from "../lib/format";
+import { backend, invoke, type DemoInfo } from "../lib/backend";
+import { baseName, clock, duration, fileSize, stripExt, uid } from "../lib/format";
 import { estimateBytesPerSecond, RESOLUTIONS, type CapturePreset, type EncodePreset } from "../lib/presets";
 import { useStore, type Clip } from "../lib/store";
 
@@ -39,11 +39,13 @@ export function ClipsView() {
   const capture = capturePresets.find((p) => p.id === settings.capturePreset) ?? capturePresets[0];
   const encode = encodePresets.find((p) => p.id === settings.encodePreset) ?? encodePresets[0];
   const targets = picked.length ? clips.filter((c) => picked.includes(c.id)) : clips;
-  const totalMs = targets.reduce((n, c) => n + (c.endTime - c.startTime), 0);
+  const totalMs = targets.reduce((n, c) => n + (c.endTime - c.startTime) / (c.speed && c.speed > 0 ? c.speed : 1), 0);
   const canEncode = capture?.format.startsWith("avi");
   const perMinute = capture ? estimateBytesPerSecond(capture) * 60 : 0;
   const needed = capture ? (estimateBytesPerSecond(capture) * totalMs) / 1000 : 0;
-  const tooLittle = videos?.free != null && needed > videos.free;
+  // Encoding while recording keeps only the encoded file, a small fraction of the capture.
+  const liveEncoding = !!canEncode && encode?.id !== "none" && settings.encodeLive;
+  const tooLittle = !liveEncoding && videos?.free != null && needed > videos.free;
 
   const toggle = (id: string, e: React.MouseEvent) => {
     if (e.ctrlKey || e.metaKey || e.shiftKey) setPicked(picked.includes(id) ? picked.filter((p) => p !== id) : [...picked, id]);
@@ -57,7 +59,7 @@ export function ClipsView() {
       <section className="pane">
         <header className="toolbar">
           <h2>Clips</h2>
-          <span className="muted">{clips.length} clip{clips.length === 1 ? "" : "s"} · {duration(clips.reduce((n, c) => n + c.endTime - c.startTime, 0))} of footage</span>
+          <span className="muted">{clips.length} clip{clips.length === 1 ? "" : "s"} · {duration(clips.reduce((n, c) => n + (c.endTime - c.startTime) / (c.speed && c.speed > 0 ? c.speed : 1), 0))} of video</span>
           <span className="spacer" />
           <Button onClick={async () => videos && (await backend()).openPath(videos.path)} disabled={!videos} title="Open the folder WolfcamQL records into">
             <FolderOpen size={14} /> Videos
@@ -87,7 +89,11 @@ export function ClipsView() {
                 <div key={c.id} className={"clip" + (picked.includes(c.id) ? " is-selected" : "")} onClick={(e) => toggle(c.id, e)} onDoubleClick={() => !rendering && setEditing(c)}>
                   <div className="clip-main">
                     <strong>{c.name}</strong>
-                    <small className="muted">{c.label} · {c.povName ? `POV ${c.povName}` : "recorded POV"} · {stripExt(baseName(c.demo))}</small>
+                    <small className="muted">
+                      {c.label} · {c.povName ? `POV ${c.povName}` : "recorded POV"}
+                      {c.speed && c.speed !== 1 ? ` · ${c.speed}× speed` : ""}
+                      {c.commands?.trim() ? " · extra commands" : ""} · {stripExt(baseName(c.demo))}
+                    </small>
                     {r && (
                       <div className={`clip-status clip-${r.status}`}>
                         {r.status === "queued" ? (
@@ -103,7 +109,7 @@ export function ClipsView() {
                       </div>
                     )}
                   </div>
-                  <span className="num">{duration(c.endTime - c.startTime)}</span>
+                  <span className="num">{duration((c.endTime - c.startTime) / (c.speed && c.speed > 0 ? c.speed : 1))}</span>
                   {r?.status === "done" && r.outputs?.[0] && (
                     <button type="button" className="icon-btn" title="Show the file" onClick={async (e) => { e.stopPropagation(); (await backend()).reveal(r.outputs![0]); }}>
                       <FolderOpen size={14} />
@@ -164,7 +170,19 @@ export function ClipsView() {
                   <Button onClick={async () => { const d = await (await backend()).pickFolder("Output folder"); if (d) st.updateSettings({ outputDir: d }); }}>Browse</Button>
                 </div>
               </Field>
-              <Toggle checked={settings.deleteSource} onChange={(v) => st.updateSettings({ deleteSource: v })} label="Delete the AVI after a successful encode" />
+              <Toggle
+                checked={settings.encodeLive}
+                onChange={(v) => st.updateSettings({ encodeLive: v })}
+                label="Encode while recording (no AVI on disk)"
+              />
+              <p className="muted small">
+                {settings.encodeLive
+                  ? "WolfcamQL streams each clip straight into ffmpeg. Needs far less disk space; recording may be slower with heavy encode settings."
+                  : "WolfcamQL first writes an AVI, which ffmpeg then encodes."}
+              </p>
+              {!settings.encodeLive && (
+                <Toggle checked={settings.deleteSource} onChange={(v) => st.updateSettings({ deleteSource: v })} label="Delete the AVI after a successful encode" />
+              )}
             </>
           )}
           <Field label="Lead-in before recording" hint="Seconds played before each clip starts recording, so effects and positions have settled.">
@@ -178,15 +196,17 @@ export function ClipsView() {
               <dt>Quality</dt>
               <dd>{canEncode && encode?.id !== "none" ? encode?.name : `${capture.format.startsWith("avi") ? capture.codec + " AVI" : capture.format.toUpperCase() + " sequence"} (not encoded)`}</dd>
               <dt>Capture size</dt>
-              <dd>about {fileSize(perMinute)} per minute, before encoding</dd>
+              <dd>{liveEncoding ? "encoded while recording; no AVI is kept" : `about ${fileSize(perMinute)} per minute, before encoding`}</dd>
               <dt>Disk space left</dt>
               <dd className={tooLittle ? "is-low" : ""}>{videos?.free != null ? fileSize(videos.free) : "unknown"}</dd>
             </dl>
           )}
           {capture && targets.length > 0 && (
             <p className={"notice" + (tooLittle ? " notice-bad" : "")}>
-              {targets.length} clip{targets.length === 1 ? "" : "s"}, {duration(totalMs)} of footage: WolfcamQL's own output needs roughly {fileSize(needed)}
-              {tooLittle ? ", which is more than the free space on that disk." : "."}
+              {targets.length} clip{targets.length === 1 ? "" : "s"}, {duration(totalMs)} of video
+              {liveEncoding
+                ? ", encoded while recording."
+                : <>: WolfcamQL's own output needs roughly {fileSize(needed)}{tooLittle ? ", which is more than the free space on that disk." : "."}</>}
             </p>
           )}
           <div className="actions">
@@ -334,6 +354,11 @@ function EncodeArgs({ preset }: { preset: EncodePreset }) {
   );
 }
 
+function gameTime(info: DemoInfo, t: number): string {
+  const gs = info.gameStartTime ?? info.firstServerTime;
+  return t < gs ? "w" + clock(t - info.firstServerTime, true) : clock(t - gs, true);
+}
+
 function ClipEditor({ clip, onClose }: { clip: Clip; onClose: () => void }) {
   const info = useStore((s) => s.demoInfo[clip.demo]);
   const { updateClip, loadDemoInfo } = useStore.getState();
@@ -342,7 +367,10 @@ function ClipEditor({ clip, onClose }: { clip: Clip; onClose: () => void }) {
     void loadDemoInfo(clip.demo);
   }, [clip.demo, loadDemoInfo]);
   const save = () => {
-    updateClip(clip.id, { name: c.name, startTime: c.startTime, endTime: Math.max(c.endTime, c.startTime + 500), pov: c.pov, povName: c.povName });
+    updateClip(clip.id, {
+      name: c.name, startTime: c.startTime, endTime: Math.max(c.endTime, c.startTime + 500), pov: c.pov, povName: c.povName,
+      speed: c.speed && c.speed !== 1 ? c.speed : undefined, commands: c.commands?.trim() ? c.commands : undefined,
+    });
     onClose();
   };
   const nudge = (key: "startTime" | "endTime", sec: number) => setC({ ...c, [key]: c[key] + sec * 1000 });
@@ -351,15 +379,15 @@ function ClipEditor({ clip, onClose }: { clip: Clip; onClose: () => void }) {
       <div className="form-grid">
         <Field label="File name" wide><input autoFocus value={c.name} onChange={(e) => setC({ ...c, name: e.target.value })} /></Field>
         {(["startTime", "endTime"] as const).map((key) => (
-          <Field key={key} label={key === "startTime" ? "Start" : "End"} hint="Demo server time in ms">
+          <Field key={key} label={key === "startTime" ? "Start" : "End"} hint={info ? `${gameTime(info, c[key])} on the game clock (server time in ms)` : "Demo server time in ms"}>
             <div className="row">
               <Button small onClick={() => nudge(key, -1)}>−1 s</Button>
-              <input type="number" step={100} value={c[key]} onChange={(e) => setC({ ...c, [key]: Number(e.target.value) || c[key] })} />
+              <input type="number" step={100} value={Math.round(c[key])} onChange={(e) => setC({ ...c, [key]: Number(e.target.value) || c[key] })} />
               <Button small onClick={() => nudge(key, 1)}><Plus size={11} />1 s</Button>
             </div>
           </Field>
         ))}
-        <Field label="Point of view" wide hint={`Length ${duration(Math.max(0, c.endTime - c.startTime))}`}>
+        <Field label="Point of view" wide hint={`Length ${duration(Math.max(0, c.endTime - c.startTime))} of demo${c.speed && c.speed !== 1 ? `, ${duration((c.endTime - c.startTime) / c.speed)} of video` : ""}`}>
           <select
             value={c.pov ?? -1}
             onChange={(e) => {
@@ -370,6 +398,14 @@ function ClipEditor({ clip, onClose }: { clip: Clip; onClose: () => void }) {
             <option value={-1}>As recorded</option>
             {info ? info.players.filter((p) => p.team !== 3).map((p) => <option key={`${p.clientNum}-${p.name}`} value={p.clientNum}>{p.name}</option>) : c.pov != null && <option value={c.pov}>{c.povName}</option>}
           </select>
+        </Field>
+        <Field label="Speed" hint="Below 1 records the clip in slow motion; the video gets longer, the frame rate stays the same.">
+          <select value={c.speed ?? 1} onChange={(e) => setC({ ...c, speed: Number(e.target.value) })}>
+            {[1, 0.75, 0.5, 0.25, 0.1, 1.5, 2].map((v) => <option key={v} value={v}>{v === 1 ? "Real time" : v < 1 ? `${v}× slow motion` : `${v}× fast`}</option>)}
+          </select>
+        </Field>
+        <Field label="Extra commands for this clip" hint="Run after the demo loads, after the config profile. Example: cg_fov 110, or at <server time> cvarinterp cg_fov 90 120 2" wide>
+          <textarea rows={3} value={c.commands ?? ""} onChange={(e) => setC({ ...c, commands: e.target.value })} spellCheck={false} placeholder="cg_thirdPerson 1" />
         </Field>
       </div>
     </Modal>

@@ -99,6 +99,11 @@ fn game_folder(home: String, sub: String) -> Result<(String, Option<u64>), Strin
     Ok((dir.to_string_lossy().into_owned(), paths::disk_free(&dir)))
 }
 
+#[tauri::command]
+async fn installed_maps(exe: String, home: String, ql_path: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || paths::installed_maps(&exe, &home, &ql_path)).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command(async)]
 fn read_binds(home: String) -> Result<Vec<(String, String)>, String> {
     paths::read_binds(&home)
@@ -178,12 +183,13 @@ fn demo_rename(path: String, new_name: String) -> Result<String, String> {
     if new_name.is_empty() || new_name.contains(['/', '\\']) {
         return Err("invalid file name".into());
     }
-    let mut to = from.with_file_name(&new_name);
-    if to.extension().is_none() {
-        if let Some(ext) = from.extension() {
-            to.set_extension(ext);
-        }
+    // The demo keeps its own extension, or it would stop being recognised as a demo.
+    let ext = from.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = new_name.strip_suffix(&format!(".{ext}")).unwrap_or(&new_name);
+    if stem.trim().is_empty() {
+        return Err("invalid file name".into());
     }
+    let to = from.with_file_name(if ext.is_empty() { stem.to_string() } else { format!("{stem}.{ext}") });
     if to.exists() {
         return Err("a file with that name already exists".into());
     }
@@ -288,6 +294,7 @@ pub fn run() {
             disk_free,
             open_folder,
             read_binds,
+            installed_maps,
             scan_library,
             get_demo,
             search_frags,
