@@ -1,19 +1,39 @@
 name: release
 
-# Pushing a tag such as v0.1.0 or v0.1.0-alpha.1 builds the installers on
-# all three platforms and publishes them as a GitHub release. Tags with a
-# pre-release suffix (-alpha, -beta, -rc) are marked as pre-releases.
-# The release text is taken from docs/releases/<tag>.md when that file exists.
+# Builds the installers on all three platforms and publishes them as a
+# GitHub release. Start it either by pushing a tag such as v0.1.0, or from
+# the Actions tab ("Run workflow") with the version tag to create; the tag
+# is then created on the commit the workflow ran on. Tags with a pre-release
+# suffix (-alpha, -beta, -rc) are marked as pre-releases. The release text
+# is taken from docs/releases/<tag>.md when that file exists.
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to create, e.g. v0.1.0-alpha.1"
+        required: true
+        type: string
+
+env:
+  TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 permissions:
   contents: write
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tag must look like vX.Y.Z or vX.Y.Z-suffix
+        shell: bash
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "invalid tag: $TAG"; exit 1; }
+
   build:
+    needs: check
     strategy:
       fail-fast: true
       matrix:
@@ -75,21 +95,24 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
           cd ..
-          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          notes="docs/releases/${TAG}.md"
           if [ ! -f "$notes" ]; then
             notes="$RUNNER_TEMP/notes.md"
-            echo "WolfDeck ${GITHUB_REF_NAME}" > "$notes"
+            echo "WolfDeck ${TAG}" > "$notes"
           fi
           echo "notes=$notes" >> "$GITHUB_OUTPUT"
-          case "$GITHUB_REF_NAME" in
+          case "$TAG" in
             *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
             *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
           esac
-          name="WolfDeck ${GITHUB_REF_NAME#v}"
+          name="WolfDeck ${TAG#v}"
           name="${name/-alpha./ alpha }"; name="${name/-beta./ beta }"; name="${name/-rc./ release candidate }"
           echo "name=$name" >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG }}
+          # Only used when the tag does not exist yet (manual runs).
+          target_commitish: ${{ github.sha }}
           name: ${{ steps.prep.outputs.name }}
           body_path: ${{ steps.prep.outputs.notes }}
           prerelease: ${{ steps.prep.outputs.prerelease }}

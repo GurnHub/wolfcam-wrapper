@@ -75,7 +75,7 @@ Screenshots show the built-in sample data.
 
 ## Getting it
 
-Download the installer for Windows, Linux or macOS from the [Releases](https://github.com/GurnHub/wolfcam-wrapper/releases) page. Releases are built by the `release` workflow when a version tag (for example `v0.1.0-alpha.1`) is pushed; its text comes from `docs/releases/<tag>.md`. Every other push also builds installers in the `build` workflow, available as that run's artifacts.
+Download the installer for Windows, Linux or macOS from the [Releases](https://github.com/GurnHub/wolfcam-wrapper/releases) page. Releases are built by the `release` workflow, started either by pushing a version tag (for example `v0.1.0-alpha.1`) or from the Actions tab with the tag to create; the release text comes from `docs/releases/<tag>.md`. Every other push also builds installers in the `build` workflow, available as that run's artifacts.
 
 To build it yourself you need Node 20+ and Rust, plus the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your platform:
 
