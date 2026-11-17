@@ -8,6 +8,7 @@ import { Button, Empty, Toggle } from "../components/ui";
 import { backend, invoke, type DemoInfo, type GameFile } from "../lib/backend";
 import { clipFromRange } from "../lib/clips";
 import { baseName, clock, stripExt, uid } from "../lib/format";
+import { NAME_POSITIONS, namePositionValues } from "../lib/cvars";
 import { useStore, type CameraSettings } from "../lib/store";
 
 const SPEEDS = [0.05, 0.1, 0.2, 0.5, 1, 2, 4, 100];
@@ -250,6 +251,14 @@ function PovCard({ info }: { info?: DemoInfo }) {
   const { cmd, follow } = useStore.getState();
   const [fragPre, setFragPre] = useState(5);
   const [ent, setEnt] = useState("");
+  // Position of the watched player's name; -1 until the button has been used, then cycles (the last step hides it).
+  const [namePos, setNamePos] = useState(-1);
+  const cycleName = () => {
+    const next = (namePos + 1) % (NAME_POSITIONS.length + 1);
+    setNamePos(next);
+    const values = namePositionValues(NAME_POSITIONS[next]?.id ?? null);
+    void cmd(...Object.entries(values).map(([k, v]) => `set ${k} ${v}`));
+  };
   const playing = useMemo(() => [...(info?.players ?? [])].filter((p) => p.team !== 3).sort((a, b) => a.team - b.team || a.name.localeCompare(b.name)), [info]);
   const entNum = /^\d+$/.test(ent.trim()) ? ent.trim() : null;
   return (
@@ -277,6 +286,9 @@ function PovCard({ info }: { info?: DemoInfo }) {
         <Button small onClick={() => void cmd("toggle cg_drawCrosshair 0 5")}>Crosshair</Button>
         <Button small onClick={() => void cmd("toggle cg_wh")}>Wallhack</Button>
         <Button small onClick={() => void cmd("toggle cg_drawEntNumbers")} title="Label rockets, grenades, items and players with their entity numbers">Entity numbers</Button>
+        <Button small onClick={cycleName} title="Move the watched player's name: each click goes to the next position, the last one hides it">
+          Name: {namePos < 0 ? "move" : NAME_POSITIONS[namePos]?.label.toLowerCase() ?? "hidden"}
+        </Button>
       </div>
       <h4>Follow an entity</h4>
       <div className="btn-row">

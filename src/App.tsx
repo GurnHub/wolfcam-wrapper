@@ -1,10 +1,11 @@
-import { Clapperboard, Crosshair, FolderOpen, MonitorPlay, Settings as SettingsIcon, SlidersHorizontal, Square, TriangleAlert } from "lucide-react";
+import { Clapperboard, Crosshair, FolderOpen, Keyboard, MonitorPlay, Settings as SettingsIcon, SlidersHorizontal, Square, TriangleAlert } from "lucide-react";
 import { useEffect } from "react";
 import { baseName } from "./lib/format";
 import { useStore, type View } from "./lib/store";
 import { ClipsView } from "./views/Clips";
 import { ConfigView } from "./views/Config";
 import { FragsView } from "./views/Frags";
+import { KeysView } from "./views/Keys";
 import { LibraryView } from "./views/Library";
 import { PlayerView } from "./views/Player";
 import { SettingsView } from "./views/Settings";
@@ -15,6 +16,7 @@ const NAV: { id: View; label: string; icon: typeof FolderOpen }[] = [
   { id: "frags", label: "Frag finder", icon: Crosshair },
   { id: "clips", label: "Clips & render", icon: Clapperboard },
   { id: "config", label: "Config", icon: SlidersHorizontal },
+  { id: "keys", label: "Keys", icon: Keyboard },
   { id: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
@@ -99,6 +101,7 @@ export default function App() {
         {s.view === "frags" && <FragsView />}
         {s.view === "clips" && <ClipsView />}
         {s.view === "config" && <ConfigView />}
+        {s.view === "keys" && <KeysView />}
         {s.view === "settings" && <SettingsView />}
       </main>
       <div className="toasts">

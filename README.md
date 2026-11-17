@@ -8,9 +8,13 @@ Built with [Tauri 2](https://tauri.app) (Rust backend, React + TypeScript UI). R
 
 ![Library with the detail panel of a demo](docs/library.png)
 
-| Player | Config | Frag finder | Clips & render |
-| --- | --- | --- | --- |
-| ![Player](docs/player.png) | ![Config](docs/config.png) | ![Frag finder](docs/frags.png) | ![Clips and render](docs/clips.png) |
+| Player | Config | Keys |
+| --- | --- | --- |
+| ![Player](docs/player.png) | ![Config](docs/config.png) | ![Keys](docs/keys.png) |
+
+| Frag finder | Clips & render |
+| --- | --- |
+| ![Frag finder](docs/frags.png) | ![Clips and render](docs/clips.png) |
 
 Screenshots show the built-in sample data.
 
@@ -26,7 +30,7 @@ Screenshots show the built-in sample data.
 - Play/pause, seek ±5 s / ±30 s, click-to-seek timeline with kill markers, previous/next kill, speed from 0.05× to 100×.
 - Mark in/out, add the range to the clip list, or loop it.
 - Record video of what is playing, record a shorter demo out of the current one, take screenshots, reload the demo with changed settings.
-- Follow any player, the killer or the victim; free camera; third person; HUD, weapon, crosshair, wallhack and entity-number toggles; look at or chase any entity (a rocket, a grenade); frag forward.
+- Follow any player, the killer or the victim; free camera; third person; HUD, weapon, crosshair, wallhack and entity-number toggles; a button that cycles the position of the watched player's name; look at or chase any entity (a rocket, a grenade); frag forward.
 - Camera tools: add point, undo point, edit previous/next point, start over, play; path type for new points (curve, spline, Bezier, Catmull-Rom, straight, jump) or for all points; free camera speed and sensitivity; camera point info and path drawing; save and load cameras; record and replay movement paths.
 - Fullscreen toggle, video restart, volume, and shortcuts to the videos, screenshots and recorded-demos folders.
 - Voice-over: attach an audio file to a demo and it plays in sync with the demo position.
@@ -46,12 +50,18 @@ Screenshots show the built-in sample data.
 
 **Config**
 - Profiles (for example "Viewing" and "Movie") made of typed settings: view, HUD, frag messages, players, effects, overlays, graphics, audio, plus free-form extra commands.
-- HUD chooser: Quake Live HUD, compact HUD, Quake 3 HUD, or a custom `.menu` file.
+- HUD chooser: Quake Live HUD, compact HUD, Quake 3 HUD, or a custom `.menu` file. Position of the watched player's name (top or bottom, left, centre or right, or hidden).
 - Frag message editor with the token reference (`%v`, `%k`, `%i` ...), position, scale, colour and display time.
 - Settings the engine only applies after `vid_restart` are marked. Starting a demo or render does the restart when needed; **Apply now** sends a profile to a running WolfcamQL and offers the restart.
 - A profile only sets what you tell it to; everything else stays as it is in your own WolfcamQL config.
 - **Restore default profiles** puts the built-in profiles back to how they shipped; each built-in profile can also be reset on its own. Your own profiles are kept.
 - Export a profile as a `.cfg` file.
+
+**Keys**
+- Shows every WolfcamQL key bind as an action with its keys: playback, speed, view, free camera movement, camera points, recording and loop, plus binds to any other console command.
+- Assign a key by pressing it (keyboard, mouse buttons and wheel) or by choosing it from a list; a key that is already taken is shown with what it currently does.
+- Layouts: the WolfDeck layout (Space to pause, arrows and wheel to seek, number keys for speed, WASD free camera, camera tools on V / U / O / P / brackets), WolfcamQL's own defaults, or the binds imported from your WolfcamQL config.
+- Off until you switch on "Use these keys in WolfcamQL". From then on WolfDeck sets exactly this list each time it starts WolfcamQL, and sends changes straight away while it is running. The binds WolfcamQL had before are kept and can be loaded again.
 
 **Setup**
 - Detects WolfcamQL, Quake Live (Steam) and ffmpeg where it can.
@@ -98,7 +108,7 @@ WolfcamQL has no remote-control interface, so WolfDeck uses what the engine prov
 
 Things to know:
 
-- WolfcamQL saves changed cvars and binds to its own `q3config.cfg` as usual, so profile settings, the Windows control-key bind and `com_pipefile` persist there.
+- WolfcamQL saves changed cvars and binds to its own `q3config.cfg` as usual, so profile settings, key binds set from the Keys view, the Windows control-key bind and `com_pipefile` persist there.
 - The position shown in the Player is an estimate. It is exact after every seek made from WolfDeck; if you seek with WolfcamQL's own keys, press **Sync position**.
 - On Windows, live commands do not arrive while WolfcamQL's console or a menu is open, because the engine does not run key binds then.
 - While its window is focused, WolfcamQL captures the mouse. Alt-Tab back to WolfDeck, or use **Mouse capture** in the Player to turn that off.
@@ -106,7 +116,7 @@ Things to know:
 ## Status and testing
 
 - The Rust backend has unit tests, plus parser tests against an excerpt of a real Quake Live demo. Kill counts and match start/end times were compared with WolfcamQL's own demo pre-parse on full demos (protocols 68 and 73).
-- `src-tauri/tests/engine.rs` drives a real WolfcamQL: live command delivery (each batch exactly once), seeking by server time, capture and ffmpeg encode, camera points (add, undo, edit, path type), looping, demo cutting, screenshots, a custom HUD and a video restart mid-demo. It was run on Linux against WolfcamQL 12.7test53 built from source. It is skipped unless the `WOLFDECK_TEST_*` variables described in that file are set.
+- `src-tauri/tests/engine.rs` drives a real WolfcamQL: live command delivery (each batch exactly once), seeking by server time, capture and ffmpeg encode, camera points (add, undo, edit, path type), looping, demo cutting, screenshots, a custom HUD, a video restart mid-demo, and key binds (applied at launch, changed while running, triggered by a real key press, read back from the engine's config). It was run on Linux against WolfcamQL 12.7test53 built from source. It is skipped unless the `WOLFDECK_TEST_*` variables described in that file are set.
 - Not yet verified on real hardware: the Windows key-press command channel (it compiles in CI, but has not been exercised against WolfcamQL on Windows), macOS, and demos of protocol 90 and 91 (the field tables follow the WolfcamQL source, but no sample demos were available).
 
 ## Licence

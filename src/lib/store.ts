@@ -4,12 +4,13 @@ import {
   type DemoEntry, type DemoInfo, type Detected, type InstallStatus, type LaunchSpec, type RenderJob, type RenderUpdate, type WolfcamState,
 } from "./backend";
 import { baseName, stripExt, uid } from "./format";
+import { bindCommands, normalizeBinds, WOLFDECK_LAYOUT, type BindMap } from "./keys";
 import {
   captureCvars, defaultCapturePresets, defaultEncodePresets, encodeArgs, parseCvarLines, videoArgs,
   type CapturePreset, type EncodePreset,
 } from "./presets";
 
-export type View = "library" | "player" | "frags" | "clips" | "config" | "settings";
+export type View = "library" | "player" | "frags" | "clips" | "config" | "keys" | "settings";
 
 export interface Settings {
   wolfcamExe: string;
@@ -75,6 +76,14 @@ export interface Clip {
   povName: string;
   label: string;
   render?: RenderUpdate;
+}
+
+export interface KeyState {
+  /** When on, WolfDeck replaces WolfcamQL's binds with `binds` each time it starts it. */
+  enabled: boolean;
+  binds: BindMap;
+  /** WolfcamQL's own binds as they were when management was first switched on. */
+  previous: BindMap | null;
 }
 
 export interface DemoMeta {
@@ -147,6 +156,7 @@ interface State {
   meta: Record<string, DemoMeta>;
   quick: QuickCommand[];
   voiceOvers: Record<string, VoiceOver>;
+  keys: KeyState;
 
   detected: Detected | null;
   install: InstallStatus | null;
@@ -207,6 +217,11 @@ interface State {
   savePresets(capture: CapturePreset[], encode: EncodePreset[]): void;
   saveQuick(quick: QuickCommand[]): void;
   setVoiceOver(demo: string, vo: VoiceOver | null): void;
+  setKeysEnabled(enabled: boolean): Promise<void>;
+  /** Replaces the key map; sent to WolfcamQL straight away when it is running and keys are managed. */
+  setBinds(binds: BindMap): void;
+  /** Reads the binds WolfcamQL has saved in its own config. */
+  readEngineBinds(): Promise<BindMap | null>;
   startRender(ids: string[]): Promise<void>;
   cancelRender(): Promise<void>;
 }
@@ -259,6 +274,7 @@ export const useStore = create<State>((set, get) => ({
   meta: {},
   quick: defaultQuick,
   voiceOvers: {},
+  keys: { enabled: false, binds: { ...WOLFDECK_LAYOUT }, previous: null },
   detected: null,
   install: null,
   ffmpegVersion: null,
@@ -282,7 +298,7 @@ export const useStore = create<State>((set, get) => ({
     if (initStarted) return; // React strict mode runs effects twice in development
     initStarted = true;
     const b = await backend();
-    const [settings, profiles, clips, presets, meta, quick, voiceOvers] = await Promise.all([
+    const [settings, profiles, clips, presets, meta, quick, voiceOvers, keys] = await Promise.all([
       load<Partial<Settings>>("settings", {}),
       load<Profile[]>("profiles", defaultProfiles),
       load<Clip[]>("clips", []),
@@ -290,6 +306,7 @@ export const useStore = create<State>((set, get) => ({
       load<Record<string, DemoMeta>>("meta", {}),
       load<QuickCommand[]>("quick", defaultQuick),
       load<Record<string, VoiceOver>>("voiceovers", {}),
+      load<Partial<KeyState>>("keys", {}),
     ]);
     const s: Settings = { ...defaultSettings, ...settings, camera: { ...defaultSettings.camera, ...settings.camera } };
     const detected = await invoke<Detected>("detect_paths").catch(() => null);
@@ -302,6 +319,7 @@ export const useStore = create<State>((set, get) => ({
     }
     set({
       settings: s, profiles, detected, meta, quick, voiceOvers, mock: b.mock,
+      keys: { enabled: !!keys.enabled, binds: keys.binds ?? { ...WOLFDECK_LAYOUT }, previous: keys.previous ?? null },
       // A render that was interrupted by closing the app is not running any more.
       clips: clips.map((c) => (c.render && c.render.status !== "done" ? { ...c, render: undefined } : c)),
       capturePresets: presets.capture, encodePresets: presets.encode,
@@ -411,6 +429,7 @@ export const useStore = create<State>((set, get) => ({
     const start = opts.startTime ?? null;
     let config = profile.config;
     if (s.camera.touched) config += cameraCommands(s.camera).join("\n") + "\n";
+    if (get().keys.enabled) config += bindCommands(get().keys.binds).join("\n") + "\n";
     // WolfcamQL crashes on `follow` before the first frame is drawn; `at 1` defers it to that frame.
     if (opts.pov != null) config += `at 1 follow ${opts.pov}\n`;
     if (start != null) config += `seekservertime ${Math.round(start)}\n`;
@@ -571,6 +590,34 @@ export const useStore = create<State>((set, get) => ({
     else delete voiceOvers[demo];
     set({ voiceOvers });
     persist("voiceovers", voiceOvers);
+  },
+
+  async readEngineBinds() {
+    try {
+      return normalizeBinds(await invoke<[string, string][]>("read_binds", { home: get().settings.wolfcamHome }));
+    } catch (e) {
+      get().toast("error", String(e));
+      return null;
+    }
+  },
+
+  async setKeysEnabled(enabled) {
+    let { previous } = get().keys;
+    if (enabled && !previous) {
+      // Keep what WolfcamQL had, so it can be put back.
+      previous = await invoke<[string, string][]>("read_binds", { home: get().settings.wolfcamHome }).then(normalizeBinds).catch(() => null);
+    }
+    const keys = { ...get().keys, enabled, previous };
+    set({ keys });
+    persist("keys", keys);
+    if (enabled && get().wolfcam.ready) void get().cmd(...bindCommands(keys.binds));
+  },
+
+  setBinds(binds) {
+    const keys = { ...get().keys, binds };
+    set({ keys });
+    persist("keys", keys);
+    if (keys.enabled && get().wolfcam.ready) void get().cmd(...bindCommands(binds));
   },
 
   async startRender(ids) {

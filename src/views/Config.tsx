@@ -2,7 +2,7 @@ import { Copy, Download, Plus, RotateCcw, Search, Send, Trash2 } from "lucide-re
 import { useEffect, useMemo, useState } from "react";
 import { Button, Field, Toggle } from "../components/ui";
 import { backend, invoke, type GameFile } from "../lib/backend";
-import { CVAR_GROUPS, needsRestart, toCss, toEngine, type CvarDef } from "../lib/cvars";
+import { CVAR_GROUPS, NAME_POSITIONS, namePositionValues, needsRestart, toCss, toEngine, type CvarDef } from "../lib/cvars";
 import { uid } from "../lib/format";
 import { defaultProfiles, profileParts, useStore, type Profile } from "../lib/store";
 
@@ -102,6 +102,38 @@ function HudChooser({ profile, onChange }: { profile: Profile; onChange: (values
           ? profile.values.cg_hudFiles ? <>Using <code>{profile.values.cg_hudFiles}</code>. A file from outside WolfcamQL is copied into its ui folder.</> : "Pick a HUD file with the extension .menu."
           : mode === "q3" ? "The original Quake 3 status bar (cg_qlhud 0)." : mode === "unset" ? "The HUD stays whatever your WolfcamQL config uses." : "Sets cg_qlhud and cg_hudFiles."}
       </small>
+    </div>
+  );
+}
+
+const NAME_CVARS = ["cg_drawFollowing", "cg_drawFollowingX", "cg_drawFollowingY", "cg_drawFollowingAlign"];
+
+/** Position of the watched player's name on the HUD. */
+function NameChooser({ profile, onChange }: { profile: Profile; onChange: (values: Record<string, string>) => void }) {
+  const v = profile.values;
+  const current =
+    v.cg_drawFollowing === undefined ? "unset"
+    : v.cg_drawFollowing === "0" ? "hidden"
+    : NAME_POSITIONS.find((p) => String(p.x) === v.cg_drawFollowingX && String(p.y) === v.cg_drawFollowingY && String(p.align) === v.cg_drawFollowingAlign)?.id ?? "custom";
+  const choose = (id: string) => {
+    const values = { ...profile.values };
+    for (const k of NAME_CVARS) delete values[k];
+    if (id !== "unset") Object.assign(values, namePositionValues(id === "hidden" ? null : id));
+    onChange(values);
+  };
+  return (
+    <div className={"cvar" + (current !== "unset" ? " is-set" : "")}>
+      <div className="cvar-label">
+        <span>Watched player's name</span>
+        <small><code>cg_drawFollowing</code> · Where the name of the player you are watching is drawn.</small>
+      </div>
+      <select value={current} onChange={(e) => choose(e.target.value)} aria-label="Watched player's name position">
+        <option value="unset">Not set by this profile</option>
+        {NAME_POSITIONS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+        <option value="hidden">Hidden</option>
+        {current === "custom" && <option value="custom">Custom position</option>}
+      </select>
+      <span />
     </div>
   );
 }
@@ -280,6 +312,9 @@ export function ConfigView() {
                 </details>
               )}
               {g.id === "hud" && !query && <HudChooser profile={profile} onChange={(values) => patch({ values })} />}
+              {g.id === "hud" && (!onlySet || "cg_drawFollowing" in profile.values) && (!query || "watched player's name position following".includes(query.trim().toLowerCase())) && (
+                <NameChooser profile={profile} onChange={(values) => patch({ values })} />
+              )}
               {g.items.filter((def) => g.id !== "hud" || query || (def.name !== "cg_hudFiles" && def.name !== "cg_qlhud")).map((def) => {
                 const isSet = def.name in profile.values;
                 return (

@@ -99,6 +99,11 @@ fn game_folder(home: String, sub: String) -> Result<(String, Option<u64>), Strin
     Ok((dir.to_string_lossy().into_owned(), paths::disk_free(&dir)))
 }
 
+#[tauri::command(async)]
+fn read_binds(home: String) -> Result<Vec<(String, String)>, String> {
+    paths::read_binds(&home)
+}
+
 /// Opens a folder in the system file manager.
 #[tauri::command(async)]
 fn open_folder(app: AppHandle, path: String) -> Result<(), String> {
@@ -282,6 +287,7 @@ pub fn run() {
             game_folder,
             disk_free,
             open_folder,
+            read_binds,
             scan_library,
             get_demo,
             search_frags,

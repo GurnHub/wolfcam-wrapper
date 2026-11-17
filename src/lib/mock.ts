@@ -162,6 +162,7 @@ export function createMockBackend(): Backend {
     install_hud: (a) => `wolfdeck/hud-${String(a.menu).split(/[\\/]/).pop()!.replace(/\.menu$/i, "")}.cfg`,
     game_folder: (a) => [`/home/demo/.wolfcamql/wolfcam-ql/${a.sub}`, 13.2 * 1024 ** 3],
     disk_free: () => 13.2 * 1024 ** 3,
+    read_binds: () => [["ENTER", "freecam"], ["PAUSE", "pause"], ["UPARROW", "fastforward 60"], ["DOWNARROW", "rewind 60"], ["v", "cg_draw2d 2; addcamerapoint"], ["o", "playcamera"], ["ESCAPE", "togglemenu"], ["`", "toggleconsole"], ["F8", "exec mymovie.cfg"]],
     scan_library: async () => {
       for (let i = 1; i <= 4; i++) {
         emit("library-progress", { done: i * 35, total: 140 });

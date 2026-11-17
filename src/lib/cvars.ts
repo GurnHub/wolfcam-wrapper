@@ -40,6 +40,28 @@ export function needsRestart(name: string): boolean {
   return LATCHED.has(name.toLowerCase());
 }
 
+/**
+ * Where the name of the player being watched is drawn ("Your Name" in Wolf
+ * Whisperer). Coordinates are on the engine's 640x480 virtual screen;
+ * align 0 = left, 1 = centre, 2 = right.
+ */
+export const NAME_POSITIONS: { id: string; label: string; x: number; y: number; align: number }[] = [
+  { id: "top", label: "Top centre", x: 320, y: 50, align: 1 },
+  { id: "top-left", label: "Top left", x: 8, y: 50, align: 0 },
+  { id: "top-right", label: "Top right", x: 632, y: 50, align: 2 },
+  { id: "bottom-left", label: "Bottom left", x: 8, y: 440, align: 0 },
+  { id: "bottom", label: "Bottom centre", x: 320, y: 440, align: 1 },
+  { id: "bottom-right", label: "Bottom right", x: 632, y: 440, align: 2 },
+];
+
+/** cvar values for a name position; `null` hides the name. */
+export function namePositionValues(id: string | null): Record<string, string> {
+  const p = NAME_POSITIONS.find((n) => n.id === id);
+  if (!p) return { cg_drawFollowing: "0" };
+  // 2 draws the name for the demo taker's own view as well.
+  return { cg_drawFollowing: "2", cg_drawFollowingX: String(p.x), cg_drawFollowingY: String(p.y), cg_drawFollowingAlign: String(p.align) };
+}
+
 export const FRAG_TOKENS: [string, string][] = [
   ["%v", "victim name"], ["%V", "victim name without colours"], ["%k", "killer name"], ["%K", "killer name without colours"],
   ["%q", "old Q3 frag message (\"player ate player2's rocket\")"], ["%w", "weapon name"], ["%i", "weapon icon"],
@@ -100,7 +122,6 @@ export const CVAR_GROUPS: CvarGroup[] = [
       bool("cg_drawAmmoWarning", "Low ammo warning", "1"),
       bool("cg_drawCenterPrint", "Centre messages", "1"),
       bool("cg_drawClientItemTimer", "Item timers", "1"),
-      range("cg_drawFollowing", "\"Following\" label", "1", 0, 2, 1, "2 always shows it, even for the demo taker."),
       range("cg_chatTime", "Chat display time (ms)", "5000", 0, 20000, 500),
       range("cg_obituaryTime", "Kill feed time (ms)", "3000", 0, 20000, 500),
     ],

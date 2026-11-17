@@ -325,3 +325,70 @@ fn player_tools_drive_camera_recording_and_screenshots() {
 
     session.stop();
 }
+
+/// Key binds from the Keys view: applied at launch, changed while running,
+/// effective for real key presses, and readable back from the engine's config.
+#[test]
+fn key_binds_apply_and_round_trip() {
+    let Some(e) = env() else {
+        eprintln!("skipped: WOLFDECK_TEST_* not set");
+        return;
+    };
+    let game = std::path::Path::new(&e.home).join("wolfcam-ql");
+    let sink = Arc::new(Collect::default());
+    let session = Arc::new(Session::default());
+    // What the UI generates for a key map: clear everything, then bind.
+    let binds = "unbindall\nbind SPACE \"pause\"\nbind u \"selectcamerapoint last; deletecamerapoint\"\nbind [ \"editcamerapoint previous\"\nbind MWHEELUP \"fastforward 1\"\nbind F9 \"video avi name :demoname\"\n";
+    let mut cvars = small_window();
+    cvars.push(("in_nograb".into(), "1".into()));
+    let spec = LaunchSpec {
+        exe: e.exe.clone(),
+        home: e.home.clone(),
+        cvars,
+        demo: Some(e.demo.clone()),
+        config: binds.into(),
+        extra_args: e.args.clone(),
+        control_key: String::new(),
+    };
+    session.launch(spec, sink.clone()).unwrap();
+    wait_for("engine ready", 60, || sink.ready());
+    let log_text = || String::from_utf8_lossy(&std::fs::read(game.join("qconsole.log")).unwrap_or_default()).into_owned();
+
+    // `bind <key>` reports what a key is bound to.
+    session.send(&["bind SPACE".into(), "bind u".into(), "bind ENTER".into()]).unwrap();
+    wait_for("bind report", 20, || log_text().contains("\"u\" = \"selectcamerapoint last; deletecamerapoint\""));
+    assert!(log_text().contains("\"SPACE\" = \"pause\""));
+    assert!(log_text().contains("\"ENTER\" is not bound"), "unbindall must have removed WolfcamQL's default bind");
+
+    // A real key press runs the bind: Space pauses, so the demo time stops moving.
+    let xdotool = std::process::Command::new("sh")
+        .args(["-c", "w=$(xdotool search --name 'wolfcam' | head -1) && xdotool windowfocus $w && sleep 0.3 && xdotool key space"])
+        .status();
+    if xdotool.map(|s| s.success()).unwrap_or(false) {
+        let report = |n: usize| {
+            session.send(&["servertime".into()]).unwrap();
+            wait_for("server time", 10, || sink.times().len() > n);
+            *sink.times().last().unwrap()
+        };
+        std::thread::sleep(Duration::from_millis(500));
+        let first = report(sink.times().len());
+        std::thread::sleep(Duration::from_millis(1500));
+        let second = report(sink.times().len());
+        assert_eq!(first, second, "Space is bound to pause, so time must not advance");
+    } else {
+        eprintln!("xdotool not available: skipped the real key press");
+    }
+
+    // Changing the map while running replaces the binds.
+    session.send(&["unbindall".into(), "bind p \"stopcamera\"".into(), "bind SPACE \"freecam\"".into()]).unwrap();
+    session.send(&["bind SPACE".into(), "bind u".into()]).unwrap();
+    wait_for("changed binds", 20, || log_text().contains("\"SPACE\" = \"freecam\""));
+    assert!(log_text().contains("\"u\" is not bound"));
+
+    // The engine saves its binds on exit; WolfDeck reads them back for "Import from WolfcamQL".
+    session.stop();
+    let saved = wolfdeck_lib::paths::read_binds(&e.home).unwrap();
+    assert!(saved.contains(&("SPACE".to_string(), "freecam".to_string())), "{saved:?}");
+    assert!(saved.contains(&("p".to_string(), "stopcamera".to_string())), "{saved:?}");
+    assert_eq!(saved.len(), 2, "{saved:?}");
+}
