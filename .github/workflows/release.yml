@@ -1,6 +1,6 @@
 name: release
 
-# Builds the installers on all three platforms and publishes them as a
+# Builds the Windows and Linux installers and publishes them as a
 # GitHub release. Start it either by pushing a tag such as v0.1.0, or from
 # the Actions tab ("Run workflow") with the version tag to create; the tag
 # is then created on the commit the workflow ran on. Tags with a pre-release
@@ -46,9 +46,6 @@ jobs:
             files: |
               src-tauri/target/release/bundle/deb/*.deb
               src-tauri/target/release/bundle/appimage/*.AppImage
-          - os: macos-latest
-            bundles: dmg
-            files: src-tauri/target/release/bundle/dmg/*.dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
