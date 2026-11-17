@@ -88,7 +88,12 @@ jobs:
         id: prep
         shell: bash
         run: |
-          cd dist-release
+          # An artifact with several paths keeps its folders (deb/, appimage/);
+          # the release takes plain files, so gather them in one place.
+          mkdir release-files
+          find dist-release -type f -exec mv -t release-files {} +
+          cd release-files
+          [ -n "$(ls)" ] || { echo "no installers were built"; exit 1; }
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
           cd ..
@@ -113,5 +118,5 @@ jobs:
           name: ${{ steps.prep.outputs.name }}
           body_path: ${{ steps.prep.outputs.notes }}
           prerelease: ${{ steps.prep.outputs.prerelease }}
-          files: dist-release/*
+          files: release-files/*
           fail_on_unmatched_files: true
