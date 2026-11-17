@@ -180,7 +180,9 @@ export interface Backend {
   pickFolder(title: string): Promise<string | null>;
   pickFile(title: string, extensions?: string[]): Promise<string | null>;
   reveal(path: string): Promise<void>;
+  /** Opens a folder in the system file manager. */
   openPath(path: string): Promise<void>;
+  openUrl(url: string): Promise<void>;
   /** URL usable in <audio>/<video> for a local file. */
   fileUrl(path: string): string;
   readonly mock: boolean;
@@ -214,7 +216,8 @@ async function create(): Promise<Backend> {
       return typeof r === "string" ? r : null;
     },
     reveal: (path) => opener.revealItemInDir(path),
-    openPath: (path) => opener.openPath(path),
+    openPath: (path) => core.invoke("open_folder", { path }),
+    openUrl: (url) => opener.openUrl(url),
     fileUrl: (path) => core.convertFileSrc(path),
   };
 }

@@ -21,7 +21,34 @@ export interface CvarGroup {
   id: string;
   title: string;
   items: CvarDef[];
+  /** Short reference shown under the group title: [term, meaning]. */
+  legend?: [string, string][];
 }
+
+/**
+ * Cvars the engine latches: a changed value only takes effect after
+ * `vid_restart`. Taken from the WolfcamQL source; the backend keeps the same
+ * list in `session.rs`.
+ */
+const LATCHED = new Set([
+  "cl_renderer", "r_mode", "r_customwidth", "r_customheight", "r_noborder", "r_picmip", "r_overbrightbits", "r_mapoverbrightbits",
+  "r_intensity", "r_fullbright", "r_vertexlight", "r_greyscale", "r_mapgreyscale", "r_ext_multisample", "r_ext_max_anisotropy",
+  "r_usefbo", "r_fboantialias", "r_enablepostprocess", "r_enablecolorcorrect", "r_swapinterval", "s_useopenal",
+]);
+
+export function needsRestart(name: string): boolean {
+  return LATCHED.has(name.toLowerCase());
+}
+
+export const FRAG_TOKENS: [string, string][] = [
+  ["%v", "victim name"], ["%V", "victim name without colours"], ["%k", "killer name"], ["%K", "killer name without colours"],
+  ["%q", "old Q3 frag message (\"player ate player2's rocket\")"], ["%w", "weapon name"], ["%i", "weapon icon"],
+  ["%A", "killer's accuracy, all weapons"], ["%a", "killer's accuracy with the kill weapon"],
+  ["%D", "victim's accuracy, all weapons"], ["%d", "victim's accuracy with the last held weapon"],
+  ["%c", "colour, e.g. %c0xff00ff"], ["%t", "victim's team colour"], ["%T", "killer's team colour"],
+  ["%f", "victim's flag in team games"], ["%F", "killer's flag in team games"], ["%n", "victim's country flag"], ["%N", "killer's country flag"],
+  ["%l", "victim's clan tag"], ["%L", "victim's clan tag without colours"], ["%x", "killer's clan tag"], ["%X", "killer's clan tag without colours"],
+];
 
 const bool = (name: string, label: string, def: string, help?: string): CvarDef => ({ name, label, def, help, kind: { type: "bool" } });
 const range = (name: string, label: string, def: string, min: number, max: number, step: number, help?: string): CvarDef => ({
@@ -79,6 +106,25 @@ export const CVAR_GROUPS: CvarGroup[] = [
     ],
   },
   {
+    id: "kills",
+    title: "Frag messages",
+    legend: FRAG_TOKENS,
+    items: [
+      text("cg_drawFragMessageTokens", "Frag message", "You fragged %v", "Shown in the centre when the followed player gets a kill."),
+      text("cg_obituaryTokens", "Kill feed line", "%k %i %v"),
+      text("cg_drawFragMessageTeamTokens", "Team kill message", "You fragged %v, your teammate"),
+      text("cg_drawFragMessageFreezeTokens", "Freeze message", "You froze %v"),
+      text("cg_drawFragMessageFreezeTeamTokens", "Team freeze message", "You froze %v, your teammate"),
+      text("cg_drawFragMessageThawTokens", "Thaw message", "You thawed %v"),
+      range("cg_drawFragMessageAlpha", "Opacity", "255", 0, 255, 5),
+      range("cg_drawFragMessageScale", "Scale", "0.25", 0.05, 1, 0.01),
+      range("cg_drawFragMessageX", "X position", "320", 0, 640, 1, "On the 640x480 virtual screen."),
+      range("cg_drawFragMessageY", "Y position", "120", 0, 480, 1),
+      range("cg_drawFragMessageTime", "Display time (ms)", "3000", 0, 20000, 250),
+      color("cg_drawFragMessageColor", "Colour", "0xffffff"),
+    ],
+  },
+  {
     id: "players",
     title: "Players",
     items: [
@@ -113,6 +159,17 @@ export const CVAR_GROUPS: CvarGroup[] = [
       range("cg_shadows", "Player shadows", "1", 0, 3, 1),
       range("cg_screenDamageAlpha", "Damage flash opacity", "200", 0, 255, 5),
       bool("cg_enableBreath", "Cold breath", "1"),
+    ],
+  },
+  {
+    id: "debug",
+    title: "Entities and overlays",
+    items: [
+      range("cg_drawEntNumbers", "Show entity numbers", "0", 0, 3, 1, "1 labels rockets, grenades, items and players so they can be followed; 2 and 3 also show them through walls."),
+      bool("cg_drawCameraPath", "Draw the camera path", "1"),
+      range("cg_drawCameraPointInfo", "Camera point info", "1", 0, 3, 1),
+      bool("cg_freecam_noclip", "Free camera passes through walls", "0"),
+      range("cg_freecam_sensitivity", "Free camera mouse sensitivity", "0.1", 0.01, 1, 0.01),
     ],
   },
   {

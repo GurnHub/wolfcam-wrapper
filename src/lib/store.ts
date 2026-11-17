@@ -33,6 +33,28 @@ export interface Settings {
   viewWidth: number;
   viewHeight: number;
   setupDone: boolean;
+  camera: CameraSettings;
+}
+
+/** Camera tool settings from the Player. Sent to WolfcamQL once the user has changed one. */
+export interface CameraSettings {
+  touched: boolean;
+  /** Path type given to new camera points. */
+  type: "curve" | "spline" | "jump" | "interp" | "splineBezier" | "splineCatmullRom";
+  freecamSpeed: number;
+  sensitivity: number;
+  pointInfo: boolean;
+  drawPath: boolean;
+}
+
+export function cameraCommands(c: CameraSettings): string[] {
+  return [
+    `set cg_cameraDefaultOriginType ${c.type}`,
+    `set cg_freecam_speed ${c.freecamSpeed}`,
+    `set cg_freecam_sensitivity ${c.sensitivity}`,
+    `set cg_drawCameraPointInfo ${c.pointInfo ? 1 : 0}`,
+    `set cg_drawCameraPath ${c.drawPath ? 1 : 0}`,
+  ];
 }
 
 export interface Profile {
@@ -92,9 +114,11 @@ const defaultSettings: Settings = {
   clipLeadIn: 5, clipLeadOut: 3, capturePreRoll: 3, deleteSource: false,
   activeProfile: "viewing", capturePreset: "hq1080", encodePreset: "h264",
   viewFullscreen: false, viewWidth: 1600, viewHeight: 900, setupDone: false,
+  camera: { touched: false, type: "splineBezier", freecamSpeed: 400, sensitivity: 0.1, pointInfo: true, drawPath: true },
 };
 
-const defaultProfiles: Profile[] = [
+/** The profiles WolfDeck ships with; "Restore defaults" puts these back. */
+export const defaultProfiles: Profile[] = [
   { id: "viewing", name: "Viewing", values: {}, extra: "" },
   {
     id: "movie", name: "Movie (clean)", extra: "",
@@ -141,6 +165,7 @@ interface State {
   followed: number | null;
   log: string[];
 
+  looping: boolean;
   rendering: boolean;
   toasts: Toast[];
   mock: boolean;
@@ -156,7 +181,15 @@ interface State {
   setSelected(paths: string[]): void;
   setMeta(path: string, patch: DemoMeta): void;
 
-  play(path: string, opts?: { startTime?: number; pov?: number | null; paused?: boolean }): Promise<void>;
+  play(path: string | null, opts?: { startTime?: number; pov?: number | null; paused?: boolean }): Promise<void>;
+  /** Restarts the current demo at the current position, picking up changed settings. */
+  reloadDemo(): void;
+  setCamera(patch: Partial<CameraSettings>): void;
+  /** Loops playback between the in and out marks, or stops looping. */
+  toggleLoop(): void;
+  restoreDefaultProfiles(): void;
+  /** Sends a profile's settings to the running WolfcamQL. Returns false when nothing is running. */
+  applyProfileLive(id: string, restartVideo: boolean): Promise<boolean>;
   stop(): Promise<void>;
   cmd(...commands: string[]): Promise<boolean>;
   seekTo(serverTime: number): void;
@@ -201,16 +234,18 @@ function splitArgs(s: string): string[] {
   return s.match(/"[^"]*"|\S+/g)?.map((a) => a.replace(/^"(.*)"$/, "$1")) ?? [];
 }
 
-/** Profile values become start-up cvars (renderer/sound) or session config lines. */
+/**
+ * A profile's settings are applied before the demo loads, so the game module
+ * starts with them (the HUD file and player models are only read then). Its
+ * extra commands run once the demo has loaded.
+ */
 export function profileParts(p: Profile | undefined): { cvars: [string, string][]; config: string } {
   const cvars: [string, string][] = [];
-  let config = "";
   for (const [k, v] of Object.entries(p?.values ?? {})) {
-    if (/^(r_|s_|cl_renderer$)/i.test(k)) cvars.push([k, v]);
-    else config += `set ${k} "${v.replace(/"/g, "")}"\n`;
+    if (k === "cg_hudFiles" && !v) continue; // custom HUD selected but no file picked yet
+    cvars.push([k, v.replace(/"/g, "")]);
   }
-  if (p?.extra.trim()) config += p.extra.trim() + "\n";
-  return { cvars, config };
+  return { cvars, config: p?.extra.trim() ? p.extra.trim() + "\n" : "" };
 }
 
 export const useStore = create<State>((set, get) => ({
@@ -238,6 +273,7 @@ export const useStore = create<State>((set, get) => ({
   markOut: null,
   followed: null,
   log: [],
+  looping: false,
   rendering: false,
   toasts: [],
   mock: false,
@@ -255,7 +291,7 @@ export const useStore = create<State>((set, get) => ({
       load<QuickCommand[]>("quick", defaultQuick),
       load<Record<string, VoiceOver>>("voiceovers", {}),
     ]);
-    const s: Settings = { ...defaultSettings, ...settings };
+    const s: Settings = { ...defaultSettings, ...settings, camera: { ...defaultSettings.camera, ...settings.camera } };
     const detected = await invoke<Detected>("detect_paths").catch(() => null);
     if (detected && !s.setupDone) {
       // First start: adopt whatever could be found; the Settings view shows it for review.
@@ -281,7 +317,7 @@ export const useStore = create<State>((set, get) => ({
         set({ playhead: { ...get().playhead, baseWall: performance.now() } });
       }
       if (!st.running) {
-        set({ playingDemo: null });
+        set({ playingDemo: null, looping: false });
         if (prev.running && !prev.ready && st.exitCode !== undefined) {
           get().toast("error", "WolfcamQL closed before the demo had loaded. Check its location and pak files in Settings; the last console lines are in wolfcam-ql/qconsole.log.");
         }
@@ -370,10 +406,11 @@ export const useStore = create<State>((set, get) => ({
       get().toast("error", "Set the WolfcamQL location in Settings first.");
       return set({ view: "settings" });
     }
-    const info = await get().loadDemoInfo(path);
+    const info = path ? await get().loadDemoInfo(path) : null;
     const profile = profileParts(profiles.find((p) => p.id === s.activeProfile));
     const start = opts.startTime ?? null;
     let config = profile.config;
+    if (s.camera.touched) config += cameraCommands(s.camera).join("\n") + "\n";
     // WolfcamQL crashes on `follow` before the first frame is drawn; `at 1` defers it to that frame.
     if (opts.pov != null) config += `at 1 follow ${opts.pov}\n`;
     if (start != null) config += `seekservertime ${Math.round(start)}\n`;
@@ -395,7 +432,7 @@ export const useStore = create<State>((set, get) => ({
     };
     try {
       set({
-        playingDemo: path, log: [], markIn: null, markOut: null, followed: opts.pov ?? null, view: "player",
+        playingDemo: path, log: [], markIn: null, markOut: null, followed: opts.pov ?? null, view: "player", looping: false,
         wolfcam: { running: true, ready: false, demo: path },
         playhead: { baseTime: start ?? info?.firstServerTime ?? 0, baseWall: performance.now(), timescale: 1, paused: !!opts.paused },
       });
@@ -404,6 +441,49 @@ export const useStore = create<State>((set, get) => ({
       set({ wolfcam: { running: false }, playingDemo: null });
       get().toast("error", String(e));
     }
+  },
+
+  reloadDemo() {
+    const { playingDemo, followed, playhead } = get();
+    if (playingDemo) void get().play(playingDemo, { startTime: get().position(), pov: followed, paused: playhead.paused });
+  },
+
+  setCamera(patch) {
+    const camera = { ...get().settings.camera, ...patch, touched: true };
+    get().updateSettings({ camera });
+    if (get().wolfcam.ready) void get().cmd(...cameraCommands(camera));
+  },
+
+  toggleLoop() {
+    const { looping, markIn, markOut } = get();
+    if (looping) {
+      // `loop` without arguments toggles looping in the engine.
+      void get().cmd("loop");
+      return set({ looping: false });
+    }
+    if (markIn == null || markOut == null || markOut <= markIn) return;
+    void get().cmd(`loop ${Math.round(markIn)} ${Math.round(markOut)}`);
+    set({ looping: true });
+    get().seekTo(markIn);
+  },
+
+  restoreDefaultProfiles() {
+    const builtIn = new Set(defaultProfiles.map((p) => p.id));
+    const custom = get().profiles.filter((p) => !builtIn.has(p.id));
+    get().saveProfiles([...defaultProfiles.map((p) => ({ ...p, values: { ...p.values } })), ...custom]);
+  },
+
+  async applyProfileLive(id, restartVideo) {
+    const profile = get().profiles.find((p) => p.id === id);
+    if (!profile || !get().wolfcam.ready) return false;
+    const commands = Object.entries(profile.values)
+      .filter(([k, v]) => k !== "cg_hudFiles" || v)
+      .map(([k, v]) => `set ${k} "${v.replace(/"/g, "")}"`);
+    commands.push(...profile.extra.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("//")));
+    // The HUD is only re-read on request.
+    if (profile.values.cg_hudFiles) commands.push(`loadhud ${profile.values.cg_hudFiles}`);
+    if (restartVideo) commands.push("vid_restart");
+    return get().cmd(...commands);
   },
 
   async stop() {

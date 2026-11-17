@@ -215,3 +215,113 @@ fn render_queue_captures_and_encodes_a_clip() {
     assert!((58..=62).contains(&parts[2]), "expected ~60 frames, got {text}");
     assert!(!std::path::Path::new(&e.home).join("wolfcam-ql/videos/wolfdeck_test_clip.avi").exists());
 }
+
+/// The Player's tool buttons: camera points (add, undo, edit), demo cutting
+/// and screenshots, as issued by the UI.
+#[test]
+fn player_tools_drive_camera_recording_and_screenshots() {
+    let Some(e) = env() else {
+        eprintln!("skipped: WOLFDECK_TEST_* not set");
+        return;
+    };
+    let info = wolfdeck_lib::demo::parse_file(std::path::Path::new(&e.demo)).unwrap();
+    let game = std::path::Path::new(&e.home).join("wolfcam-ql");
+    let sink = Arc::new(Collect::default());
+    let session = Arc::new(Session::default());
+    let spec = LaunchSpec {
+        exe: e.exe.clone(),
+        home: e.home.clone(),
+        cvars: small_window(),
+        demo: Some(e.demo.clone()),
+        config: String::new(),
+        extra_args: e.args.clone(),
+        control_key: String::new(),
+    };
+    // A custom HUD chosen in the Config view: installed, then named in cg_hudFiles.
+    let hud_src = std::path::Path::new(&e.home).join("wdtest.menu");
+    std::fs::write(&hud_src, "menuDef {\n\tname \"wdtest\"\n\tfullScreen 0\n\tvisible 1\n\trect 0 0 640 480\n}\n").unwrap();
+    let hud = wolfdeck_lib::paths::install_hud(&e.exe, &e.home, &hud_src.to_string_lossy()).unwrap();
+    let mut spec = spec;
+    spec.cvars.push(("cg_hudFiles".into(), hud.clone()));
+    session.launch(spec, sink.clone()).unwrap();
+    wait_for("engine ready", 60, || sink.ready());
+    let log_text = || String::from_utf8_lossy(&std::fs::read(game.join("qconsole.log")).unwrap_or_default()).into_owned();
+    let loaded = log_text().lines().find(|l| l.contains("CG_LoadMenus()")).unwrap_or_default().to_string();
+    assert!(loaded.contains(&hud), "the profile's HUD must be the one loaded at start, got: {loaded}");
+    let t0 = info.game_start_time.unwrap_or(info.first_server_time) + 15_000;
+    let step = |cmds: &[String]| {
+        session.send(cmds).unwrap();
+        std::thread::sleep(Duration::from_millis(700));
+    };
+    let s = |x: &str| x.to_string();
+    let camera_points = |name: &str| -> usize {
+        let dir = game.join("cameras");
+        let file = std::fs::read_dir(&dir).ok().and_then(|rd| {
+            rd.flatten().map(|f| f.path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with(&format!("{name}.cam")))
+        });
+        file.map(|f| String::from_utf8_lossy(&std::fs::read(f).unwrap()).matches("camera point").count()).unwrap_or(0)
+    };
+
+    // Three camera points, two seconds apart.
+    step(&[s("cl_freezeDemo 1"), s("freecam"), format!("seekservertime {t0}")]);
+    step(&[s("addcamerapoint")]);
+    step(&[format!("seekservertime {}", t0 + 2000)]);
+    step(&[s("addcamerapoint")]);
+    step(&[format!("seekservertime {}", t0 + 4000)]);
+    step(&[s("addcamerapoint"), s("savecamera wdthree")]);
+    wait_for("camera file", 10, || camera_points("wdthree") > 0);
+    assert_eq!(camera_points("wdthree"), 3);
+
+    // "Apply to all points" changes the path type of every existing point.
+    let types = |name: &str| -> Vec<String> {
+        let dir = game.join("cameras");
+        let file = std::fs::read_dir(&dir).unwrap().flatten().map(|f| f.path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with(&format!("{name}.cam"))).unwrap();
+        String::from_utf8_lossy(&std::fs::read(file).unwrap()).lines().filter(|l| l.trim_end().ends_with("  type")).map(|l| l.split_whitespace().next().unwrap().to_string()).collect()
+    };
+    let before = types("wdthree");
+    step(&[s("selectcamerapoint all"), s("ecam type jump"), s("savecamera wdjump")]);
+    wait_for("retyped camera file", 10, || camera_points("wdjump") == 3);
+    let after = types("wdjump");
+    assert!(after.iter().all(|t| *t == after[0]) && after != before, "types before {before:?}, after {after:?}");
+
+    // Undo removes the newest point only.
+    step(&[s("selectcamerapoint last"), s("deletecamerapoint"), s("savecamera wdtwo")]);
+    wait_for("camera file after undo", 10, || camera_points("wdtwo") > 0);
+    assert_eq!(camera_points("wdtwo"), 2);
+
+    // Edit previous/next jumps to a camera point's time.
+    step(&[s("editcamerapoint previous")]);
+    session.send(&[s("servertime")]).unwrap();
+    wait_for("server time report", 10, || !sink.times().is_empty());
+    let at = *sink.times().last().unwrap();
+    assert!((at - t0 as f64).abs() < 100.0 || (at - (t0 + 2000) as f64).abs() < 100.0, "edit point moved to {at}, points are at {t0} and {}", t0 + 2000);
+
+    // Cut a demo out of the one that is playing; the result must parse.
+    step(&[s("record wdcut"), s("cl_freezeDemo 0")]);
+    std::thread::sleep(Duration::from_secs(2));
+    step(&[s("stoprecord"), s("screenshotJPEG")]);
+    let cut = game.join("demos").join("wdcut.dm_73");
+    wait_for("cut demo", 10, || cut.is_file());
+    let cut_info = wolfdeck_lib::demo::parse_file(&cut).expect("cut demo parses");
+    assert_eq!(cut_info.map, info.map);
+    assert!(cut_info.snapshots > 20, "cut demo has {} snapshots", cut_info.snapshots);
+    wait_for("screenshot", 10, || std::fs::read_dir(game.join("screenshots")).map(|rd| rd.count() > 0).unwrap_or(false));
+
+    // Looping between two marks keeps playback inside the range.
+    step(&[format!("loop {} {}", t0 + 6000, t0 + 7000), format!("seekservertime {}", t0 + 6000)]);
+    std::thread::sleep(Duration::from_millis(3500));
+    let seen = sink.times().len();
+    session.send(&[s("servertime")]).unwrap();
+    wait_for("server time while looping", 10, || sink.times().len() > seen);
+    let at = *sink.times().last().unwrap();
+    assert!(at >= (t0 + 5900) as f64 && at <= (t0 + 7200) as f64, "loop left its range: {at}");
+    step(&[s("loop")]);
+
+    // The engine survives a video restart mid-demo and keeps taking commands (profile "Apply now").
+    step(&[s("set r_picmip 1"), s("vid_restart")]);
+    session.send(&[s("echo WD_AFTER_RESTART")]).unwrap();
+    wait_for("command after vid_restart", 40, || log_text().contains("WD_AFTER_RESTART"));
+    assert!(session.is_running());
+
+    session.stop();
+}

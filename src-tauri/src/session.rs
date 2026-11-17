@@ -43,9 +43,10 @@ pub struct LaunchSpec {
     pub exe: String,
     /// `fs_homepath`; empty selects the platform default.
     pub home: String,
-    /// Cvars applied before the demo loads (resolution, renderer, capture
-    /// settings ...). The video system is restarted first when one of the
-    /// values it latches differs from the saved engine config.
+    /// Cvars applied before the demo loads: resolution, renderer and capture
+    /// settings, and the config profile (the game module reads some of it,
+    /// such as the HUD file, only while it starts). The video system is
+    /// restarted first when a latched value differs from the saved config.
     pub cvars: Vec<(String, String)>,
     pub demo: Option<String>,
     /// Config text executed after the demo has loaded.
@@ -88,16 +89,32 @@ fn saved_cvar<'a>(q3config: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-/// Renderer and sound cvars are latched: they only take effect when the
-/// subsystem restarts. Returns true when the saved config would start the
-/// engine with a different value for one of them.
+/// Cvars the engine latches: a new value only takes effect after
+/// `vid_restart` (checked against the WolfcamQL source). The UI marks the
+/// same set; keep `src/lib/cvars.ts` in step.
+pub const LATCHED: &[&str] = &[
+    "cl_renderer", "r_mode", "r_customwidth", "r_customheight", "r_noborder", "r_picmip", "r_overbrightbits",
+    "r_mapoverbrightbits", "r_intensity", "r_fullbright", "r_vertexlight", "r_greyscale", "r_mapgreyscale",
+    "r_ext_multisample", "r_ext_max_anisotropy", "r_usefbo", "r_fboantialias", "r_enablepostprocess",
+    "r_enablecolorcorrect", "r_swapinterval", "s_useopenal",
+];
+
+/// Renderer cvars known to apply immediately.
+const LIVE_RENDERER: &[&str] = &[
+    "r_fullscreen", "r_gamma", "r_fastsky", "r_dynamiclight", "r_flares", "r_contrast", "r_enablebloom", "r_bloomintensity",
+];
+
+pub fn is_latched(name: &str) -> bool {
+    let k = name.to_ascii_lowercase();
+    // Renderer cvars this list does not know are treated as latched, which at worst costs one restart.
+    LATCHED.contains(&k.as_str()) || (k.starts_with("r_") && !LIVE_RENDERER.contains(&k.as_str()))
+}
+
+/// Returns true when the saved engine config would start the engine with a
+/// different value for a latched cvar than the one requested.
 pub fn needs_video_restart(spec: &LaunchSpec) -> bool {
     let q3config = std::fs::read_to_string(game_home(&spec.home).join("q3config.cfg")).unwrap_or_default();
-    spec.cvars.iter().any(|(k, v)| {
-        let k = k.to_ascii_lowercase();
-        let latched = k.starts_with("r_") || k.starts_with("s_") || k == "cl_renderer";
-        latched && saved_cvar(&q3config, &k).map(|saved| saved != v.as_str()).unwrap_or(true)
-    })
+    spec.cvars.iter().any(|(k, v)| is_latched(k) && saved_cvar(&q3config, k).map(|saved| saved != v.as_str()).unwrap_or(true))
 }
 
 pub fn build_args(spec: &LaunchSpec) -> Result<Vec<String>, String> {
@@ -493,6 +510,8 @@ mod tests {
         assert!(!build_args(&spec).unwrap().contains(&"+vid_restart".to_string()));
         spec.cvars.push(("r_picmip".into(), "0".into()));
         assert!(build_args(&spec).unwrap().contains(&"+vid_restart".to_string()));
+        assert!(is_latched("R_PicMip") && is_latched("s_useOpenAL") && is_latched("r_someNewThing"));
+        assert!(!is_latched("r_gamma") && !is_latched("r_fullscreen") && !is_latched("s_volume") && !is_latched("cg_fov"));
 
         prepare_files(&spec).unwrap();
         let pre = std::fs::read_to_string(home.join(GAME_DIR).join("wolfdeck/pre.cfg")).unwrap();

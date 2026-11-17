@@ -140,6 +140,15 @@ export function SettingsView() {
       </section>
 
       <section className="card">
+        <h3>Help</h3>
+        <div className="btn-row">
+          <Button onClick={async () => (await backend()).openUrl("https://github.com/brugal/wolfcamql/blob/master/README-wolfcam.txt")}>WolfcamQL commands and cvars</Button>
+          <Button onClick={async () => (await backend()).openUrl("https://github.com/GurnHub/wolfcam-wrapper#readme")}>WolfDeck guide</Button>
+        </div>
+        <p className="muted small">The WolfcamQL reference lists every console command and setting; anything in it can be used in a profile's extra commands or typed into the Player's console.</p>
+      </section>
+
+      <section className="card">
         <h3>Advanced</h3>
         <div className="form-grid">
           <Field label="Extra WolfcamQL arguments" hint="Added to every launch, e.g. +set r_forceMap campgrounds" wide>

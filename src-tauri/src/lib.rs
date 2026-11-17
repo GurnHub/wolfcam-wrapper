@@ -83,6 +83,38 @@ fn list_game_files(exe: String, home: String, sub: String, exts: Vec<String>) ->
 }
 
 #[tauri::command(async)]
+fn install_hud(exe: String, home: String, menu: String) -> Result<String, String> {
+    paths::install_hud(&exe, &home, &menu)
+}
+
+/// Absolute path of a folder below `<home>/wolfcam-ql` (videos, screenshots,
+/// demos ...), created if needed, plus the free space on its volume.
+#[tauri::command(async)]
+fn game_folder(home: String, sub: String) -> Result<(String, Option<u64>), String> {
+    if !sub.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("invalid folder name".into());
+    }
+    let dir = session::game_home(&home).join(&sub);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok((dir.to_string_lossy().into_owned(), paths::disk_free(&dir)))
+}
+
+/// Opens a folder in the system file manager.
+#[tauri::command(async)]
+fn open_folder(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    if !Path::new(&path).is_dir() {
+        return Err(format!("folder not found: {path}"));
+    }
+    app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+fn disk_free(path: String) -> Option<u64> {
+    paths::disk_free(Path::new(&path))
+}
+
+#[tauri::command(async)]
 fn read_text(path: String) -> Result<String, String> {
     let md = std::fs::metadata(&path).map_err(|e| e.to_string())?;
     if md.len() > 2 * 1024 * 1024 {
@@ -246,6 +278,10 @@ pub fn run() {
             list_game_files,
             read_text,
             write_game_file,
+            install_hud,
+            game_folder,
+            disk_free,
+            open_folder,
             scan_library,
             get_demo,
             search_frags,

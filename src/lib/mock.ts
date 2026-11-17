@@ -154,11 +154,14 @@ export function createMockBackend(): Backend {
     }),
     sync_paks: () => [],
     list_game_files: (a) =>
-      (a.sub === "cameras" ? ["intro-flyby.cam3", "mid-orbit.cam3", "rail-follow.cam3"] : ["hud.cfg", "movie.cfg"]).map((name) => ({
+      (a.sub === "cameras" ? ["intro-flyby.cam10", "mid-orbit.cam10", "strafe-run.record"] : ["hud.menu", "min_hud.menu", "inspectreHUD.menu"]).map((name) => ({
         name, path: `/home/demo/.wolfcamql/wolfcam-ql/${a.sub}/${name}`, size: 2048, modified: 1700000000,
       })),
     read_text: () => "// sample file\n",
     write_game_file: (a) => `/home/demo/.wolfcamql/wolfcam-ql/${a.name}`,
+    install_hud: (a) => `wolfdeck/hud-${String(a.menu).split(/[\\/]/).pop()!.replace(/\.menu$/i, "")}.cfg`,
+    game_folder: (a) => [`/home/demo/.wolfcamql/wolfcam-ql/${a.sub}`, 13.2 * 1024 ** 3],
+    disk_free: () => 13.2 * 1024 ** 3,
     scan_library: async () => {
       for (let i = 1; i <= 4; i++) {
         emit("library-progress", { done: i * 35, total: 140 });
@@ -222,6 +225,7 @@ export function createMockBackend(): Backend {
     pickFile: async () => "/home/demo/picked-file",
     reveal: async () => undefined,
     openPath: async () => undefined,
+    openUrl: async (url) => void window.open(url, "_blank"),
     fileUrl: (p) => p,
   };
 }

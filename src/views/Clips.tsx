@@ -1,7 +1,7 @@
 import { Clapperboard, Copy, FolderOpen, Play, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button, Empty, Field, Modal, Progress, Toggle } from "../components/ui";
-import { backend } from "../lib/backend";
+import { backend, invoke } from "../lib/backend";
 import { baseName, duration, fileSize, stripExt, uid } from "../lib/format";
 import { estimateBytesPerSecond, RESOLUTIONS, type CapturePreset, type EncodePreset } from "../lib/presets";
 import { useStore, type Clip } from "../lib/store";
@@ -28,12 +28,22 @@ export function ClipsView() {
   const [picked, setPicked] = useState<string[]>([]);
   const [editing, setEditing] = useState<Clip | null>(null);
   const [editPreset, setEditPreset] = useState(false);
+  const [videos, setVideos] = useState<{ path: string; free: number | null } | null>(null);
+  useEffect(() => {
+    // Free space where WolfcamQL writes its captures; refreshed when a render ends.
+    void invoke<[string, number | null]>("game_folder", { home: settings.wolfcamHome, sub: "videos" })
+      .then(([path, free]) => setVideos({ path, free }))
+      .catch(() => setVideos(null));
+  }, [settings.wolfcamHome, rendering]);
 
   const capture = capturePresets.find((p) => p.id === settings.capturePreset) ?? capturePresets[0];
   const encode = encodePresets.find((p) => p.id === settings.encodePreset) ?? encodePresets[0];
   const targets = picked.length ? clips.filter((c) => picked.includes(c.id)) : clips;
   const totalMs = targets.reduce((n, c) => n + (c.endTime - c.startTime), 0);
   const canEncode = capture?.format.startsWith("avi");
+  const perMinute = capture ? estimateBytesPerSecond(capture) * 60 : 0;
+  const needed = capture ? (estimateBytesPerSecond(capture) * totalMs) / 1000 : 0;
+  const tooLittle = videos?.free != null && needed > videos.free;
 
   const toggle = (id: string, e: React.MouseEvent) => {
     if (e.ctrlKey || e.metaKey || e.shiftKey) setPicked(picked.includes(id) ? picked.filter((p) => p !== id) : [...picked, id]);
@@ -49,6 +59,9 @@ export function ClipsView() {
           <h2>Clips</h2>
           <span className="muted">{clips.length} clip{clips.length === 1 ? "" : "s"} · {duration(clips.reduce((n, c) => n + c.endTime - c.startTime, 0))} of footage</span>
           <span className="spacer" />
+          <Button onClick={async () => videos && (await backend()).openPath(videos.path)} disabled={!videos} title="Open the folder WolfcamQL records into">
+            <FolderOpen size={14} /> Videos
+          </Button>
           {picked.length > 0 && (
             <Button
               onClick={() => {
@@ -158,9 +171,22 @@ export function ClipsView() {
             <input type="number" min={0} max={30} step={0.5} value={settings.capturePreRoll} onChange={(e) => st.updateSettings({ capturePreRoll: Math.max(0, Number(e.target.value) || 0) })} />
           </Field>
 
+          {capture && (
+            <dl className="disk-info">
+              <dt>Video</dt>
+              <dd>{capture.width}×{capture.height} at {capture.fps} fps{capture.blurFrames ? `, ${capture.blurFrames}-frame blur` : ""}</dd>
+              <dt>Quality</dt>
+              <dd>{canEncode && encode?.id !== "none" ? encode?.name : `${capture.format.startsWith("avi") ? capture.codec + " AVI" : capture.format.toUpperCase() + " sequence"} (not encoded)`}</dd>
+              <dt>Capture size</dt>
+              <dd>about {fileSize(perMinute)} per minute, before encoding</dd>
+              <dt>Disk space left</dt>
+              <dd className={tooLittle ? "is-low" : ""}>{videos?.free != null ? fileSize(videos.free) : "unknown"}</dd>
+            </dl>
+          )}
           {capture && targets.length > 0 && (
-            <p className="notice">
-              {targets.length} clip{targets.length === 1 ? "" : "s"}, {duration(totalMs)} of footage. WolfcamQL's own output needs roughly {fileSize((estimateBytesPerSecond(capture) * totalMs) / 1000)} of disk space.
+            <p className={"notice" + (tooLittle ? " notice-bad" : "")}>
+              {targets.length} clip{targets.length === 1 ? "" : "s"}, {duration(totalMs)} of footage: WolfcamQL's own output needs roughly {fileSize(needed)}
+              {tooLittle ? ", which is more than the free space on that disk." : "."}
             </p>
           )}
           <div className="actions">
