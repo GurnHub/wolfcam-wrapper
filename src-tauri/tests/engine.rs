@@ -314,7 +314,9 @@ fn player_tools_drive_camera_recording_and_screenshots() {
     step(&[s("record wdcut"), s("cl_freezeDemo 0")]);
     std::thread::sleep(Duration::from_secs(2));
     step(&[s("stoprecord"), s("screenshotJPEG")]);
-    let cut = game.join("demos").join("wdcut.dm_73");
+    // WolfcamQL records in the protocol of the demo being played.
+    let ext = std::path::Path::new(&e.demo).extension().unwrap().to_string_lossy().into_owned();
+    let cut = game.join("demos").join(format!("wdcut.{ext}"));
     wait_for("cut demo", 10, || cut.is_file());
     let cut_info = wolfdeck_lib::demo::parse_file(&cut).expect("cut demo parses");
     assert_eq!(cut_info.map, info.map);
@@ -485,4 +487,46 @@ fn render_slow_motion_pipe_and_demo_end() {
     assert_eq!(late_done["status"], "done", "a clip past the end must be shortened, not hang: {late_done}");
     let (_, late_frames) = probe(&out_dir.join("wd_late.mp4"));
     assert!((45..=56).contains(&late_frames), "clamped to ~1.7 s, got {late_frames} frames");
+}
+
+/// Playing a frag from the Frag finder launches the demo with a start time and a point of view in
+/// the session config; playback must begin there, not at the start of the demo. With a protocol 91
+/// demo this covers WolfcamQL's Steam Workshop check, which delays loading past `+demo`.
+#[test]
+fn launch_starts_at_requested_time() {
+    let Some(e) = env() else {
+        eprintln!("skipped: WOLFDECK_TEST_* not set");
+        return;
+    };
+    let info = wolfdeck_lib::demo::parse_file(std::path::Path::new(&e.demo)).unwrap();
+    let kill = info.kills.iter().rfind(|k| !k.own_goal).expect("demo has kills");
+    let target = kill.server_time - 3000;
+    let sink = Arc::new(Collect::default());
+    let session = Arc::new(Session::default());
+    let spec = LaunchSpec {
+        exe: e.exe.clone(),
+        home: e.home.clone(),
+        cvars: small_window(),
+        demo: Some(e.demo.clone()),
+        config: format!("{}\nseekservertime {target}\n", wolfdeck_lib::render::follow_line(kill.killer)),
+        extra_args: e.args.clone(),
+        control_key: String::new(),
+        path_prepend: Vec::new(),
+    };
+    session.launch(spec, sink.clone()).unwrap();
+    wait_for("engine ready", 60, || sink.ready());
+    std::thread::sleep(Duration::from_millis(1000));
+    session.send(&["servertime".into()]).unwrap();
+    wait_for("server time report", 20, || !sink.times().is_empty());
+    let got = *sink.times().last().unwrap();
+    eprintln!("first server time {}, target {target}, engine at {got}", info.first_server_time);
+    assert!(got >= target as f64 - 500.0 && got < target as f64 + 3000.0, "started at {got}, wanted {target}");
+    // The point of view requested at launch is in effect too.
+    session.send(&["follow".into()]).unwrap();
+    let following = format!("currently following [{}]", kill.killer);
+    wait_for("follow report", 20, || {
+        let log = std::fs::read(std::path::Path::new(&e.home).join("wolfcam-ql/qconsole.log")).unwrap_or_default();
+        String::from_utf8_lossy(&log).contains(&following)
+    });
+    session.stop();
 }
