@@ -2,6 +2,7 @@ import { Clapperboard, Crosshair, FolderOpen, Keyboard, MonitorPlay, Settings as
 import { useEffect } from "react";
 import { baseName } from "./lib/format";
 import { useStore, type View } from "./lib/store";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ClipsView } from "./views/Clips";
 import { ConfigView } from "./views/Config";
 import { FragsView } from "./views/Frags";
@@ -96,6 +97,7 @@ export default function App() {
         </div>
       </nav>
       <main className="main">
+        <ErrorBoundary resetKey={s.view}>
         {s.view === "library" && <LibraryView />}
         {s.view === "player" && <PlayerView />}
         {s.view === "frags" && <FragsView />}
@@ -103,6 +105,7 @@ export default function App() {
         {s.view === "config" && <ConfigView />}
         {s.view === "keys" && <KeysView />}
         {s.view === "settings" && <SettingsView />}
+        </ErrorBoundary>
       </main>
       <div className="toasts">
         {s.toasts.map((t) => (
