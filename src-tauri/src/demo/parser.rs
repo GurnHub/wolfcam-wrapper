@@ -35,6 +35,8 @@ const SVC_SNAPSHOT: i32 = 7;
 const SVC_EOF: i32 = 8;
 
 type Fields = [i32; MAX_FIELDS];
+/// A network field table: (field name, bit count; 0 means a float).
+type FieldTable = &'static [(&'static str, i8)];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -142,7 +144,7 @@ fn idx(table: &[(&str, i8)], name: &str) -> usize {
 
 impl Layout {
     fn for_protocol(p: i32) -> Option<Layout> {
-        let (es, ps, ql): (&'static [(&str, i8)], &'static [(&str, i8)], bool) = match p {
+        let (es, ps, ql): (FieldTable, FieldTable, bool) = match p {
             66..=71 => (ES_Q3, PS_Q3, false),
             73 => (ES_QL73, PS_Q3, true),
             90 => (ES_QL90, PS_QL90, true),

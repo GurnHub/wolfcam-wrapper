@@ -156,6 +156,10 @@ export interface RenderJob {
   config: string;
   videoArgs: string;
   encode: EncodeSpec | null;
+  /** Game speed while recording; 0.5 is half-speed slow motion. */
+  speed: number;
+  /** Encode while recording through WolfcamQL's ffmpeg pipe (no AVI on disk). */
+  pipe: EncodeSpec | null;
 }
 
 export interface RenderUpdate {

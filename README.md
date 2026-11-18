@@ -23,11 +23,13 @@ Screenshots show the built-in sample data.
 **Library**
 - Indexes any number of demo folders (recursively). Reads Quake Live `.dm_73`, `.dm_90`, `.dm_91` and Quake 3 `.dm_66`–`.dm_71` directly: map, mode, server, date, players, who recorded it, length, every kill and the chat.
 - Search across file name, map, players, server, tags and notes; filter by mode, map, tag, favourites; sort by any column.
+- Flags demos whose map WolfcamQL does not have (checked against the pak files it can load, including Steam Workshop content), with a filter to list them.
 - Favourites, tags and notes per demo. Rename, move, delete to the recycle bin, show in folder.
 - Per-demo kill timeline, kill list, player list with kills/deaths, chat log. Play from any kill or from any player's point of view.
 
 **Player** (remote control for a running WolfcamQL)
 - Play/pause, seek ±5 s / ±30 s, click-to-seek timeline with kill markers, previous/next kill, speed from 0.05× to 100×.
+- Go straight to a game clock time (`10:21`, or `w1:30` in warmup) and to the previous/next round in round-based modes.
 - Mark in/out, add the range to the clip list, or loop it.
 - Record video of what is playing, record a shorter demo out of the current one, take screenshots, reload the demo with changed settings.
 - Follow any player, the killer or the victim; free camera; third person; HUD, weapon, crosshair, wallhack and entity-number toggles; a button that cycles the position of the watched player's name; look at or chase any entity (a rocket, a grenade); frag forward.
@@ -42,10 +44,12 @@ Screenshots show the built-in sample data.
 - Play a result to check it, or add one or many to the clip list.
 
 **Clips & render**
-- Clip list with editable name, start/end and point of view.
+- Clip list with editable name, start/end and point of view, a per-clip speed for slow motion, and per-clip extra commands.
 - Capture presets: resolution (up to 4K, vertical and square included), frame rate, motion blur, AVI codec or image sequences, optional depth pass, extra cvars.
 - Unattended batch render: WolfcamQL is started once per clip, records exactly the clip and quits.
 - Optional ffmpeg encode per clip: H.264, H.264 for YouTube, H.265, ProRes 422 HQ, DNxHR HQ, FFV1, or your own arguments. Progress per clip, cancel at any time.
+- Encode while recording: WolfcamQL streams the capture straight into ffmpeg, so no large AVI is written first.
+- Clips are kept inside the demo (a clip that runs past the demo's end is shortened), and a capture that stops making progress is ended with an error instead of waiting forever.
 - Shows the capture size per minute and the free disk space, and warns when a batch will not fit.
 
 **Config**
@@ -66,6 +70,7 @@ Screenshots show the built-in sample data.
 **Setup**
 - Detects WolfcamQL, Quake Live (Steam) and ffmpeg where it can.
 - Checks that WolfcamQL has the Quake Live pak files and copies missing ones ("Sync paks").
+- Optional SteamCMD location, so WolfcamQL can download Steam Workshop maps a demo needs.
 
 ## Requirements
 
@@ -116,7 +121,7 @@ Things to know:
 ## Status and testing
 
 - The Rust backend has unit tests, plus parser tests against an excerpt of a real Quake Live demo. Kill counts and match start/end times were compared with WolfcamQL's own demo pre-parse on full demos (protocols 68 and 73).
-- `src-tauri/tests/engine.rs` drives a real WolfcamQL: live command delivery (each batch exactly once), seeking by server time, capture and ffmpeg encode, camera points (add, undo, edit, path type), looping, demo cutting, screenshots, a custom HUD, a video restart mid-demo, and key binds (applied at launch, changed while running, triggered by a real key press, read back from the engine's config). It was run on Linux against WolfcamQL 12.7test53 built from source. It is skipped unless the `WOLFDECK_TEST_*` variables described in that file are set.
+- `src-tauri/tests/engine.rs` drives a real WolfcamQL: live command delivery (each batch exactly once), seeking by server time, capture and ffmpeg encode, camera points (add, undo, edit, path type), looping, demo cutting, screenshots, a custom HUD, a video restart mid-demo, seeking by game clock (compared with WolfcamQL's own `seekclock`), slow-motion and encode-while-recording renders, a clip that runs past the end of the demo, and key binds (applied at launch, changed while running, triggered by a real key press, read back from the engine's config). It was run on Linux against WolfcamQL 12.7test53 built from source. It is skipped unless the `WOLFDECK_TEST_*` variables described in that file are set.
 - Not yet verified on real hardware: the Windows key-press command channel (it compiles in CI, but has not been exercised against WolfcamQL on Windows), and demos of protocol 90 and 91 (the field tables follow the WolfcamQL source, but no sample demos were available).
 
 ## Licence

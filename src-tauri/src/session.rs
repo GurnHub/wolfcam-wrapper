@@ -54,6 +54,9 @@ pub struct LaunchSpec {
     pub extra_args: Vec<String>,
     /// Key used to trigger command execution on Windows, e.g. "F13".
     pub control_key: String,
+    /// Folders put in front of PATH for the engine, e.g. where ffmpeg lives
+    /// when WolfcamQL pipes video into it.
+    pub path_prepend: Vec<String>,
 }
 
 pub fn game_home(home: &str) -> PathBuf {
@@ -204,6 +207,15 @@ pub fn spawn(spec: &LaunchSpec) -> Result<Child, String> {
     // Start with a fresh log so the tail only ever sees this session.
     let _ = std::fs::remove_file(game_home(&spec.home).join("qconsole.log"));
     let mut cmd = Command::new(exe);
+    if !spec.path_prepend.is_empty() {
+        let mut dirs: Vec<PathBuf> = spec.path_prepend.iter().map(PathBuf::from).collect();
+        if let Some(p) = std::env::var_os("PATH") {
+            dirs.extend(std::env::split_paths(&p));
+        }
+        if let Ok(joined) = std::env::join_paths(dirs) {
+            cmd.env("PATH", joined);
+        }
+    }
     cmd.args(args)
         .current_dir(exe.parent().unwrap_or(Path::new(".")))
         .stdin(Stdio::null())

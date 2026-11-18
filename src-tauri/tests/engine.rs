@@ -93,6 +93,7 @@ fn live_session_executes_each_command_batch_once() {
         config: format!("echo WD_TEST_SESSION_CFG\n{}", wolfdeck_lib::render::follow_line(pov)),
         extra_args: e.args.clone(),
         control_key: String::new(),
+        path_prepend: Vec::new(),
     };
     session.launch(spec, sink.clone()).unwrap();
     // Commands sent while the engine is still loading are queued, not lost.
@@ -129,6 +130,16 @@ fn live_session_executes_each_command_batch_once() {
     let got = *sink.times().last().unwrap();
     assert!((got - target as f64).abs() < 500.0, "seek target {target}, engine reports {got}");
 
+    // The Player's "go to 1:00" (game start + 60 s, from the parser) lands where WolfcamQL's own seekclock does.
+    let ours = info.game_start_time.unwrap() + 60_000;
+    let before = sink.times().len();
+    session.send(&["seekclock 1:00".into()]).unwrap();
+    std::thread::sleep(Duration::from_millis(1200));
+    session.send(&["servertime".into()]).unwrap();
+    wait_for("server time after seekclock", 20, || sink.times().len() > before);
+    let engine = *sink.times().last().unwrap();
+    assert!((engine - ours as f64).abs() < 100.0, "seekclock 1:00 -> {engine}, WolfDeck computes {ours}");
+
     session.stop();
     assert!(!session.is_running());
     wait_for("exit state", 5, || sink.last_state().map(|s| s["running"] == false).unwrap_or(false) || !session.is_running());
@@ -164,6 +175,8 @@ fn render_queue_captures_and_encodes_a_clip() {
             output_dir: out_dir.to_string_lossy().into_owned(),
             delete_source: true,
         }),
+        speed: 1.0,
+        pipe: None,
     };
     // Second clip: lossless codec, engine motion blur, sound in a separate WAV, another POV.
     let mut blur = job.clone();
@@ -236,6 +249,7 @@ fn player_tools_drive_camera_recording_and_screenshots() {
         config: String::new(),
         extra_args: e.args.clone(),
         control_key: String::new(),
+        path_prepend: Vec::new(),
     };
     // A custom HUD chosen in the Config view: installed, then named in cg_hudFiles.
     let hud_src = std::path::Path::new(&e.home).join("wdtest.menu");
@@ -349,6 +363,7 @@ fn key_binds_apply_and_round_trip() {
         config: binds.into(),
         extra_args: e.args.clone(),
         control_key: String::new(),
+        path_prepend: Vec::new(),
     };
     session.launch(spec, sink.clone()).unwrap();
     wait_for("engine ready", 60, || sink.ready());
@@ -391,4 +406,83 @@ fn key_binds_apply_and_round_trip() {
     assert!(saved.contains(&("SPACE".to_string(), "freecam".to_string())), "{saved:?}");
     assert!(saved.contains(&("p".to_string(), "stopcamera".to_string())), "{saved:?}");
     assert_eq!(saved.len(), 2, "{saved:?}");
+}
+
+fn probe(file: &std::path::Path) -> (String, i64) {
+    // (stream types, video frame count)
+    let types = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0"])
+        .arg(file)
+        .output()
+        .unwrap();
+    let frames = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0"])
+        .arg(file)
+        .output()
+        .unwrap();
+    (
+        String::from_utf8_lossy(&types.stdout).split_whitespace().collect::<Vec<_>>().join(","),
+        String::from_utf8_lossy(&frames.stdout).trim().parse().unwrap_or(-1),
+    )
+}
+
+/// Slow motion, encoding while recording (ffmpeg pipe), and a clip that runs
+/// past the end of the demo (clamped instead of hanging).
+#[test]
+fn render_slow_motion_pipe_and_demo_end() {
+    let Some(e) = env() else {
+        eprintln!("skipped: WOLFDECK_TEST_* not set");
+        return;
+    };
+    let info = wolfdeck_lib::demo::parse_file(std::path::Path::new(&e.demo)).unwrap();
+    let start = info.game_start_time.unwrap_or(info.first_server_time) + 20_000;
+    let out_dir = std::path::Path::new(&e.home).join("piped");
+    let mut cvars = small_window();
+    cvars.push(("cl_aviFrameRate".into(), "30".into()));
+    cvars.push(("cl_aviCodec".into(), "mjpeg".into()));
+    let enc = EncodeSpec {
+        ffmpeg: "/usr/bin/ffmpeg".into(),
+        args: "-c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac".split(' ').map(String::from).collect(),
+        extension: "mp4".into(),
+        output_dir: out_dir.to_string_lossy().into_owned(),
+        delete_source: true,
+    };
+    let base_job = RenderJob {
+        demo: e.demo.clone(),
+        pre_roll_ms: 500,
+        cvars,
+        video_args: "avi".into(),
+        ..Default::default()
+    };
+    let slow = RenderJob { id: "slow".into(), name: "wd slow".into(), start_time: start, end_time: start + 2000, speed: 0.5, pipe: Some(enc.clone()), ..base_job.clone() };
+    let late = RenderJob {
+        id: "late".into(),
+        name: "wd late".into(),
+        start_time: info.last_server_time - 2000,
+        end_time: info.last_server_time + 30_000,
+        encode: Some(enc),
+        ..base_job
+    };
+    let sink = Arc::new(Collect::default());
+    let base = RenderBase { exe: e.exe, home: e.home.clone(), extra_args: e.args };
+    let t = Instant::now();
+    run_queue(vec![slow, late], base, sink.clone(), Arc::new(AtomicBool::new(false)));
+    assert!(t.elapsed() < Duration::from_secs(150), "render took {:?}", t.elapsed());
+
+    let events = sink.0.lock().unwrap();
+    let final_of = |id: &str| events.iter().rev().find(|(ev, p)| ev == "render-update" && p["id"] == id).map(|(_, p)| p.clone()).unwrap();
+    let slow_done = final_of("slow");
+    assert_eq!(slow_done["status"], "done", "{slow_done}");
+    let mp4 = out_dir.join("wd_slow.mp4");
+    assert_eq!(slow_done["outputs"][0], mp4.to_string_lossy().as_ref());
+    let (types, frames) = probe(&mp4);
+    assert_eq!(types, "video,audio", "piped encode keeps the sound");
+    assert!((115..=125).contains(&frames), "2 s of demo at half speed and 30 fps is ~120 frames, got {frames}");
+    let videos = std::path::Path::new(&e.home).join("wolfcam-ql/videos");
+    assert!(!videos.join("wd_slow.avi").exists(), "nothing is written to disk before encoding");
+
+    let late_done = final_of("late");
+    assert_eq!(late_done["status"], "done", "a clip past the end must be shortened, not hang: {late_done}");
+    let (_, late_frames) = probe(&out_dir.join("wd_late.mp4"));
+    assert!((45..=56).contains(&late_frames), "clamped to ~1.7 s, got {late_frames} frames");
 }

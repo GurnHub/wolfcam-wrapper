@@ -24,6 +24,7 @@ rayon = "1"
 dirs = "6"
 trash = "5"
 fs4 = "0.13"
+zip = { version = "2", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading"] }
@@ -38,3 +39,4 @@ strip = true
 # The demo parser is bit-twiddling heavy; keep it fast in dev builds too.
 [profile.dev.package.wolfdeck]
 opt-level = 1
+

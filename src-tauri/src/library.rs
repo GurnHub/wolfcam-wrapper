@@ -144,7 +144,7 @@ pub fn scan(cache_dir: &Path, dirs: &[String], force: bool, progress: impl Fn(us
                 _ => parse_and_cache(cache_dir, path).0,
             };
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if n % 8 == 0 || n == total {
+            if n.is_multiple_of(8) || n == total {
                 progress(n, total);
             }
             entry

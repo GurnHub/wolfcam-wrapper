@@ -42,6 +42,25 @@ export function stripExt(name: string): string {
   return i > 0 ? name.slice(0, i) : name;
 }
 
+/** File-system safe base name, the same rule the backend applies to output files. */
+export function safeName(s: string): string {
+  const n = s.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^[_.]+|[_.]+$/g, "");
+  return n || "clip";
+}
+
+/**
+ * Parses a game clock such as "10:21", "10:21.5" or "95" (seconds); a leading
+ * "w" means time since warmup started. Returns milliseconds, or null.
+ */
+export function parseClock(text: string): { ms: number; warmup: boolean } | null {
+  const m = /^\s*(w)?\s*(?:(\d+):)?(\d+(?:\.\d+)?)\s*$/i.exec(text);
+  if (!m) return null;
+  const minutes = m[2] ? Number(m[2]) : 0;
+  const seconds = Number(m[3]);
+  if (m[2] && seconds >= 60) return null;
+  return { ms: Math.round((minutes * 60 + seconds) * 1000), warmup: !!m[1] };
+}
+
 export function uid(): string {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 }

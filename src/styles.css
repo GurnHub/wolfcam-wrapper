@@ -214,6 +214,7 @@ select:disabled, input:disabled { opacity: 0.5; }
 .tbody .trow.is-selected { background: var(--accent-soft); }
 .tbody .trow.is-broken { color: var(--muted); }
 .cell-name { display: flex !important; align-items: center; gap: 5px; }
+.map-missing { color: var(--bad); text-decoration: underline dotted; }
 .cell-name small { color: var(--muted); margin-left: -5px; }
 .star { background: none; border: 0; padding: 2px; color: #4b5261; cursor: pointer; display: inline-flex; }
 .star:hover, .star.is-on { color: var(--accent); }
@@ -263,6 +264,7 @@ select:disabled, input:disabled { opacity: 0.5; }
 .transport { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 26px 14px 12px; display: flex; flex-direction: column; gap: 10px; }
 .transport-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .readout { font: 600 22px/1 var(--mono); font-variant-numeric: tabular-nums; min-width: 96px; text-align: center; flex: 1; }
+.goto input { width: 110px; font-family: var(--mono); }
 .is-disabled { opacity: 0.5; pointer-events: none; }
 .player-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
 .pov-list { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; max-height: 210px; overflow-y: auto; }

@@ -34,17 +34,24 @@ function PathField(props: {
   );
 }
 
+let recheckTimer: ReturnType<typeof setTimeout> | undefined;
+
 export function SettingsView() {
   const settings = useStore((s) => s.settings);
   const detected = useStore((s) => s.detected);
   const install = useStore((s) => s.install);
   const ffmpeg = useStore((s) => s.ffmpegVersion);
+  const installedMaps = useStore((s) => s.installedMaps);
   const { updateSettings, refreshInstall, rescan, toast } = useStore.getState();
   const [syncing, setSyncing] = useState(false);
 
   const set = (patch: Partial<Settings>, recheck = true) => {
     updateSettings({ ...patch, setupDone: true });
-    if (recheck) void refreshInstall();
+    if (recheck) {
+      // Path fields change on every keystroke; check the install once typing pauses.
+      clearTimeout(recheckTimer);
+      recheckTimer = setTimeout(() => void refreshInstall(), 500);
+    }
   };
 
   const sync = async () => {
@@ -116,6 +123,17 @@ export function SettingsView() {
           ))}
         </div>
         <p className="muted small">Sub-folders are included. Supported: Quake Live .dm_73, .dm_90, .dm_91 and Quake 3 .dm_66 to .dm_71.</p>
+      </section>
+
+      <section className="card">
+        <h3>Maps</h3>
+        <p className="muted small">
+          {installedMaps ? `WolfcamQL can load ${installedMaps.size} maps.` : "The maps WolfcamQL has could not be read yet."} Demos whose map is missing are marked in the Library.
+          Quake Live's own maps arrive with <b>Sync paks</b>; maps from the Steam Workshop are downloaded by WolfcamQL itself when it can run SteamCMD.
+        </p>
+        <div className="form-grid">
+          <PathField label="SteamCMD" kind="file" value={settings.steamcmdPath} onChange={(v) => set({ steamcmdPath: v })} placeholder="steamcmd (optional)" hint="Lets WolfcamQL download Steam Workshop content a demo needs. Free from Valve; leave empty to skip." />
+        </div>
       </section>
 
       <section className="card">
