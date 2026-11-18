@@ -4,6 +4,7 @@ import {
   type DemoEntry, type DemoInfo, type Detected, type Frag, type InstallStatus, type LaunchSpec, type RenderJob, type RenderUpdate, type WolfcamState,
 } from "./backend";
 import { baseName, safeName, stripExt, uid } from "./format";
+import { WOLFDECK_DEFAULTS } from "./cvars";
 import { bindCommands, normalizeBinds, WOLFDECK_LAYOUT, type BindMap } from "./keys";
 import {
   captureCvars, defaultCapturePresets, defaultEncodePresets, encodeArgs, parseCvarLines, videoArgs,
@@ -296,6 +297,11 @@ function splitArgs(s: string): string[] {
   return s.match(/"[^"]*"|\S+/g)?.map((a) => a.replace(/^"(.*)"$/, "$1")) ?? [];
 }
 
+/** A profile's cvar values, plus the settings WolfDeck always sends when the profile leaves them unset. */
+function profileValues(p: Profile | undefined): Record<string, string> {
+  return { ...WOLFDECK_DEFAULTS, ...(p?.values ?? {}) };
+}
+
 /**
  * A profile's settings are applied before the demo loads, so the game module
  * starts with them (the HUD file and player models are only read then). Its
@@ -303,7 +309,7 @@ function splitArgs(s: string): string[] {
  */
 export function profileParts(p: Profile | undefined): { cvars: [string, string][]; config: string } {
   const cvars: [string, string][] = [];
-  for (const [k, v] of Object.entries(p?.values ?? {})) {
+  for (const [k, v] of Object.entries(profileValues(p))) {
     if (k === "cg_hudFiles" && !v) continue; // custom HUD selected but no file picked yet
     cvars.push([k, v.replace(/"/g, "")]);
   }
@@ -560,7 +566,7 @@ export const useStore = create<State>((set, get) => ({
   async applyProfileLive(id, restartVideo) {
     const profile = get().profiles.find((p) => p.id === id);
     if (!profile || !get().wolfcam.ready) return false;
-    const commands = Object.entries(profile.values)
+    const commands = Object.entries(profileValues(profile))
       .filter(([k, v]) => k !== "cg_hudFiles" || v)
       .map(([k, v]) => `set ${k} "${v.replace(/"/g, "")}"`);
     commands.push(...profile.extra.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("//")));
