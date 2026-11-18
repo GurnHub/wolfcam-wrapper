@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import {
   backend, invoke,
-  type DemoEntry, type DemoInfo, type Detected, type InstallStatus, type LaunchSpec, type RenderJob, type RenderUpdate, type WolfcamState,
+  type DemoEntry, type DemoInfo, type Detected, type Frag, type InstallStatus, type LaunchSpec, type RenderJob, type RenderUpdate, type WolfcamState,
 } from "./backend";
 import { baseName, safeName, stripExt, uid } from "./format";
 import { bindCommands, normalizeBinds, WOLFDECK_LAYOUT, type BindMap } from "./keys";
@@ -153,6 +153,32 @@ const defaultQuick: QuickCommand[] = [
   { id: "q3", label: "Player list", command: "players" },
 ];
 
+/** The Frag finder's form. Kept in the store (and saved) so leaving the view, e.g. to play a result, keeps it. */
+export interface FragForm {
+  scope: "all" | "selected";
+  players: string;
+  victim: string;
+  weapons: string[];
+  minKills: number;
+  windowSec: number;
+  povOnly: boolean;
+  warmup: boolean;
+}
+
+export const defaultFragForm: FragForm = {
+  scope: "all", players: "", victim: "", weapons: [], minKills: 2, windowSec: 4, povOnly: false, warmup: false,
+};
+
+export interface FragFinder {
+  form: FragForm;
+  /** Results of the last search; null before the first one. Kept for the session only. */
+  results: Frag[] | null;
+  /** Indexes into results. */
+  picked: number[];
+  /** Scroll position of the result list, restored when the view is shown again. */
+  scrollTop: number;
+}
+
 interface State {
   ready: boolean;
   view: View;
@@ -165,6 +191,7 @@ interface State {
   quick: QuickCommand[];
   voiceOvers: Record<string, VoiceOver>;
   keys: KeyState;
+  frags: FragFinder;
 
   detected: Detected | null;
   install: InstallStatus | null;
@@ -192,6 +219,8 @@ interface State {
 
   init(): Promise<void>;
   setView(v: View): void;
+  /** Updates the Frag finder; a form change is saved. */
+  setFrags(patch: Partial<Omit<FragFinder, "form">> & { form?: Partial<FragForm> }): void;
   toast(kind: Toast["kind"], text: string): void;
   dismissToast(id: string): void;
   updateSettings(patch: Partial<Settings>): void;
@@ -293,6 +322,7 @@ export const useStore = create<State>((set, get) => ({
   quick: defaultQuick,
   voiceOvers: {},
   keys: { enabled: false, binds: { ...WOLFDECK_LAYOUT }, previous: null },
+  frags: { form: defaultFragForm, results: null, picked: [], scrollTop: 0 },
   detected: null,
   install: null,
   installedMaps: null,
@@ -317,7 +347,7 @@ export const useStore = create<State>((set, get) => ({
     if (initStarted) return; // React strict mode runs effects twice in development
     initStarted = true;
     const b = await backend();
-    const [settings, profiles, clips, presets, meta, quick, voiceOvers, keys] = await Promise.all([
+    const [settings, profiles, clips, presets, meta, quick, voiceOvers, keys, fragForm] = await Promise.all([
       load<Partial<Settings>>("settings", {}),
       load<Profile[]>("profiles", defaultProfiles),
       load<Clip[]>("clips", []),
@@ -326,6 +356,7 @@ export const useStore = create<State>((set, get) => ({
       load<QuickCommand[]>("quick", defaultQuick),
       load<Record<string, VoiceOver>>("voiceovers", {}),
       load<Partial<KeyState>>("keys", {}),
+      load<Partial<FragForm>>("frags", {}),
     ]);
     const s: Settings = { ...defaultSettings, ...settings, camera: { ...defaultSettings.camera, ...settings.camera } };
     const detected = await invoke<Detected>("detect_paths").catch(() => null);
@@ -342,6 +373,7 @@ export const useStore = create<State>((set, get) => ({
       // A render that was interrupted by closing the app is not running any more.
       clips: clips.map((c) => (c.render && c.render.status !== "done" ? { ...c, render: undefined } : c)),
       capturePresets: presets.capture, encodePresets: presets.encode,
+      frags: { ...get().frags, form: { ...defaultFragForm, ...fragForm } },
       view: s.wolfcamExe ? "library" : "settings",
     });
 
@@ -380,6 +412,12 @@ export const useStore = create<State>((set, get) => ({
   },
 
   setView: (view) => set({ view }),
+  setFrags(patch) {
+    const cur = get().frags;
+    const frags = { ...cur, ...patch, form: patch.form ? { ...cur.form, ...patch.form } : cur.form };
+    set({ frags });
+    if (patch.form) persist("frags", frags.form);
+  },
 
   toast(kind, text) {
     const id = uid();
