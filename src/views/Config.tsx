@@ -1,4 +1,4 @@
-import { Copy, Download, Plus, RotateCcw, Search, Send, Trash2 } from "lucide-react";
+import { Copy, Download, Plus, RotateCcw, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button, Field, Toggle } from "../components/ui";
 import { backend, invoke, type GameFile } from "../lib/backend";
@@ -141,8 +141,7 @@ function NameChooser({ profile, onChange }: { profile: Profile; onChange: (value
 export function ConfigView() {
   const profiles = useStore((s) => s.profiles);
   const settings = useStore((s) => s.settings);
-  const running = useStore((s) => !!s.wolfcam.ready);
-  const { saveProfiles, updateSettings, toast, restoreDefaultProfiles, applyProfileLive } = useStore.getState();
+  const { saveProfiles, updateSettings, toast, restoreDefaultProfiles } = useStore.getState();
   const [currentId, setCurrentId] = useState(settings.activeProfile);
   const [query, setQuery] = useState("");
   const [onlySet, setOnlySet] = useState(false);
@@ -168,8 +167,8 @@ export function ConfigView() {
 
   const exportCfg = async () => {
     const parts = profileParts(profile);
-    const text = `// ${profile.name} - exported from WolfDeck\n` + parts.cvars.map(([k, v]) => `seta ${k} "${v}"\n`).join("") + parts.config;
-    const name = `wolfdeck-${profile.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "profile"}.cfg`;
+    const text = `// ${profile.name} - exported from Wolfcam Wrapper\n` + parts.cvars.map(([k, v]) => `seta ${k} "${v}"\n`).join("") + parts.config;
+    const name = `wolfcam-wrapper-${profile.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "profile"}.cfg`;
     try {
       const path = await invoke<string>("write_game_file", { home: settings.wolfcamHome, name, text });
       toast("ok", `Saved ${path}. Use "exec ${name}" in WolfcamQL.`);
@@ -179,18 +178,12 @@ export function ConfigView() {
   };
 
   const setCount = Object.keys(profile.values).length;
-  const restartNeeded = Object.keys(profile.values).filter(needsRestart);
   const original = defaultProfiles.find((p) => p.id === profile.id);
   const modified = !!original && (original.name !== profile.name || original.extra !== profile.extra || JSON.stringify(original.values) !== JSON.stringify(profile.values));
   const builtInChanged = defaultProfiles.some((d) => {
     const p = profiles.find((x) => x.id === d.id);
     return !p || p.name !== d.name || p.extra !== d.extra || JSON.stringify(p.values) !== JSON.stringify(d.values);
   });
-
-  const applyLive = async () => {
-    const restart = restartNeeded.length > 0 && confirm(`${restartNeeded.length} setting(s) in this profile only take effect after a video restart:\n\n${restartNeeded.join(", ")}\n\nRestart WolfcamQL's video now? The picture goes black for a moment.`);
-    if (await applyProfileLive(profile.id, restart)) toast("ok", restart || !restartNeeded.length ? "Profile applied to WolfcamQL" : "Applied. Settings marked \"vid_restart\" wait for the next video restart.");
-  };
 
   return (
     <div className="config">
@@ -229,7 +222,7 @@ export function ConfigView() {
           <RotateCcw size={13} /> Restore default profiles
         </Button>
         <p className="muted small">
-          A profile is the set of WolfcamQL settings WolfDeck applies when it starts a demo or a render. Anything a profile does not set stays as it is in your own WolfcamQL config.
+          A profile is the set of WolfcamQL settings Wolfcam Wrapper applies when it starts a demo or a render. Anything a profile does not set stays as it is in your own WolfcamQL config.
         </p>
       </aside>
 
@@ -238,9 +231,6 @@ export function ConfigView() {
           <input className="profile-name" value={profile.name} onChange={(e) => patch({ name: e.target.value })} aria-label="Profile name" />
           <Button variant={profile.id === settings.activeProfile ? "default" : "primary"} disabled={profile.id === settings.activeProfile} onClick={() => updateSettings({ activeProfile: profile.id })}>
             {profile.id === settings.activeProfile ? "In use" : "Use this profile"}
-          </Button>
-          <Button disabled={!running} onClick={() => void applyLive()} title={running ? "Send this profile's settings to the running WolfcamQL" : "WolfcamQL is not running"}>
-            <Send size={14} /> Apply now
           </Button>
           <span className="spacer" />
           {modified && (
@@ -282,7 +272,7 @@ export function ConfigView() {
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Find a setting…" spellCheck={false} />
           </div>
           <Toggle checked={onlySet} onChange={setOnlySet} label={`Only what this profile sets (${setCount})`} />
-          <span className="muted small toolbar-note"><span className="badge-restart">vid_restart</span> needs a video restart to apply; starting a demo or render from WolfDeck does that automatically.</span>
+          <span className="muted small toolbar-note"><span className="badge-restart">vid_restart</span> needs a video restart to apply; starting a demo or render from Wolfcam Wrapper does that automatically.</span>
         </div>
 
         <div className="config-scroll">

@@ -1,4 +1,5 @@
-//! WolfDeck backend: demo parsing, library, WolfcamQL control and rendering.
+//! Wolfcam Wrapper backend: demo parsing, library and highlight searches, starting
+//! WolfcamQL, and rendering.
 //!
 //! Commands that touch the disk or a child process are marked `async` so they
 //! run on the worker pool instead of blocking the window's event loop.
@@ -35,6 +36,32 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let d = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
     Ok(d)
+}
+
+/// Data folder of the app under its old name, WolfDeck.
+const OLD_IDENTIFIER: &str = "io.github.wolfdeck.app";
+
+/// Brings settings, profiles, clips, keys and search forms over from the WolfDeck data folder
+/// the first time the app starts under its new name. The demo cache is rebuilt instead.
+fn migrate_old_data(new: &Path) {
+    let Some(old) = new.parent().map(|p| p.join(OLD_IDENTIFIER)) else { return };
+    // The webview creates the folder for its own caches before this runs, so look for our files.
+    let has_store = |dir: &Path| {
+        std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| e.path().extension().is_some_and(|x| x == "json"))
+    };
+    if !old.is_dir() || has_store(new) {
+        return;
+    }
+    if std::fs::create_dir_all(new).is_err() {
+        return;
+    }
+    for e in std::fs::read_dir(&old).into_iter().flatten().flatten() {
+        let path = e.path();
+        let is_store = path.extension().is_some_and(|x| x == "json") && path.file_name().is_some_and(|n| n != "library.json");
+        if path.is_file() && is_store {
+            let _ = std::fs::copy(&path, new.join(e.file_name()));
+        }
+    }
 }
 
 fn store_file(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
@@ -172,6 +199,18 @@ async fn search_frags(app: AppHandle, paths: Vec<String>, filter: library::FragF
     tauri::async_runtime::spawn_blocking(move || library::search_frags(&cache, &paths, &filter)).await.map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn search_clutches(app: AppHandle, paths: Vec<String>, filter: library::ClutchFilter) -> Result<Vec<library::ClutchHit>, String> {
+    let cache = data_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || library::search_clutches(&cache, &paths, &filter)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn search_games(app: AppHandle, paths: Vec<String>, filter: library::GameFilter) -> Result<Vec<library::GameStat>, String> {
+    let cache = data_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || library::search_games(&cache, &paths, &filter)).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command(async)]
 fn demo_trash(paths: Vec<String>) -> Result<(), String> {
     trash::delete_all(&paths).map_err(|e| e.to_string())
@@ -225,12 +264,6 @@ fn launch(app: AppHandle, state: State<Backend>, spec: session::LaunchSpec) -> R
     state.session.launch(spec, Arc::new(AppSink(app)))
 }
 
-// Stays on the event loop: it is quick, and that keeps commands in the order they were sent.
-#[tauri::command]
-fn send_commands(state: State<Backend>, commands: Vec<String>) -> Result<(), String> {
-    state.session.send(&commands)
-}
-
 #[tauri::command]
 async fn stop_wolfcam(app: AppHandle, state: State<'_, Backend>) -> Result<(), String> {
     let session = state.session.clone();
@@ -280,6 +313,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Backend::default())
+        .setup(|app| {
+            if let Ok(dir) = app.path().app_data_dir() {
+                migrate_old_data(&dir);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             store_load,
             store_save,
@@ -298,11 +337,12 @@ pub fn run() {
             scan_library,
             get_demo,
             search_frags,
+            search_clutches,
+            search_games,
             demo_trash,
             demo_rename,
             demo_move,
             launch,
-            send_commands,
             stop_wolfcam,
             wolfcam_running,
             start_render,
@@ -311,13 +351,36 @@ pub fn run() {
             ffmpeg_version,
         ])
         .on_window_event(|window, event| {
-            // Do not leave an engine running that nothing controls any more.
+            // A render's engine has nothing driving it once the app is gone. A demo opened
+            // for watching stays open: it does not depend on Wolfcam Wrapper.
             if let tauri::WindowEvent::Destroyed = event {
-                let state = window.state::<Backend>();
-                state.render_cancel.store(true, Ordering::SeqCst);
-                state.session.stop();
+                window.state::<Backend>().render_cancel.store(true, Ordering::SeqCst);
             }
         })
         .run(tauri::generate_context!())
-        .expect("error while running WolfDeck");
+        .expect("error while running Wolfcam Wrapper");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_data_is_copied_once() {
+        let root = std::env::temp_dir().join(format!("wolfcam-wrapper-migrate-{}", std::process::id()));
+        let (old, new) = (root.join(OLD_IDENTIFIER), root.join("io.github.wolfcamwrapper.app"));
+        std::fs::create_dir_all(old.join("demos")).unwrap();
+        std::fs::create_dir_all(new.join("WebKitCache")).unwrap(); // made by the webview first
+        std::fs::write(old.join("settings.json"), "{\"a\":1}").unwrap();
+        std::fs::write(old.join("library.json"), "{}").unwrap();
+        std::fs::write(old.join("demos/x.json"), "{}").unwrap();
+        migrate_old_data(&new);
+        assert_eq!(std::fs::read_to_string(new.join("settings.json")).unwrap(), "{\"a\":1}");
+        assert!(!new.join("library.json").exists() && !new.join("demos").exists(), "the cache is rebuilt, not copied");
+        // Later starts leave the new folder alone.
+        std::fs::write(old.join("settings.json"), "{\"a\":2}").unwrap();
+        migrate_old_data(&new);
+        assert_eq!(std::fs::read_to_string(new.join("settings.json")).unwrap(), "{\"a\":1}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

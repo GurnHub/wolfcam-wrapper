@@ -1,4 +1,4 @@
-import type { Kill } from "./backend";
+import type { ClutchHit, Kill } from "./backend";
 import { baseName, clock, gameClock, stripExt } from "./format";
 import type { Clip, Settings } from "./store";
 
@@ -29,4 +29,16 @@ export function clipFromKills(demo: string, map: string, kills: Kill[], s: Setti
 
 export function clipFromRange(demo: string, map: string, startTime: number, endTime: number, pov: number | null, povName: string, label: string): Omit<Clip, "id"> {
   return { name: slug(`${stripExt(baseName(demo))}-${Math.round(startTime / 1000)}`), demo, map, startTime, endTime, pov, povName, label };
+}
+
+/** A clip from the moment a player was left alone to the end of the round, following that player. */
+export function clipFromClutch(c: ClutchHit, s: Settings): Omit<Clip, "id"> {
+  return {
+    name: slug(`${c.name}-${c.map}-1v${c.enemies}-round${c.round}`),
+    demo: c.path, map: c.map,
+    startTime: c.serverTime - s.clipLeadIn * 1000,
+    endTime: c.roundEnd + s.clipLeadOut * 1000,
+    pov: c.client, povName: c.name,
+    label: `1v${c.enemies} ${c.won ? "won" : "lost"}, round ${c.round} at ${gameClock(c.clockMs, false)}`,
+  };
 }

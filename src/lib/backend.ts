@@ -32,6 +32,40 @@ export interface Chat {
   text: string;
 }
 
+export interface Round {
+  number: number;
+  startTime: number;
+  endTime: number;
+  /** 1 red, 2 blue, 0 not known. */
+  winner: number;
+}
+
+/** A player left as the last one alive on their team ("1vN"). */
+export interface Clutch {
+  round: number;
+  serverTime: number;
+  clockMs: number;
+  client: number;
+  name: string;
+  team: number;
+  enemies: number;
+  won: boolean;
+  kills: number;
+  roundEnd: number;
+}
+
+export interface PlayerScore {
+  client: number;
+  name: string;
+  team: number;
+  score: number;
+  kills: number;
+  deaths: number;
+  accuracy: number;
+  damageGiven: number;
+  damageTaken: number | null;
+}
+
 export interface DemoInfo {
   protocol: number;
   map: string;
@@ -51,6 +85,11 @@ export interface DemoInfo {
   snapshots: number;
   kills: Kill[];
   chats: Chat[];
+  rounds: Round[];
+  clutches: Clutch[];
+  /** Last scoreboard the server sent (Clan Arena and Duel). */
+  scores: PlayerScore[];
+  teamScores: [number, number] | null;
   warning: string | null;
 }
 
@@ -70,6 +109,8 @@ export interface DemoEntry {
   durationMs: number;
   killCount: number;
   povKills: number;
+  roundCount: number;
+  clutchCount: number;
   error: string | null;
   warning: string | null;
 }
@@ -97,6 +138,56 @@ export interface Frag {
   clockMs: number;
   warmup: boolean;
   kills: Kill[];
+}
+
+export interface ClutchFilter {
+  players: string[];
+  povOnly: boolean;
+  minEnemies: number;
+  wonOnly: boolean;
+}
+
+export interface ClutchHit extends Clutch {
+  path: string;
+  fileName: string;
+  map: string;
+  gametypeName: string;
+  timestamp: number | null;
+}
+
+export interface GameFilter {
+  players: string[];
+  povOnly: boolean;
+  gametypes: string[];
+  minKills: number;
+}
+
+/** One player's game in one demo. */
+export interface GameStat {
+  path: string;
+  fileName: string;
+  map: string;
+  gametypeName: string;
+  timestamp: number | null;
+  durationMs: number;
+  startTime: number;
+  client: number;
+  name: string;
+  team: number;
+  pov: boolean;
+  kills: number;
+  deaths: number;
+  suicides: number;
+  bestSpree: number;
+  bestMulti: number;
+  clutches: number;
+  clutchesWon: number;
+  score: number | null;
+  accuracy: number | null;
+  damageGiven: number | null;
+  damageTaken: number | null;
+  /** 1 won, -1 lost, 0 not known or a draw. */
+  result: number;
 }
 
 export interface Detected {
@@ -133,7 +224,6 @@ export interface LaunchSpec {
   demo: string | null;
   config: string;
   extraArgs: string[];
-  controlKey: string;
 }
 
 export interface EncodeSpec {
@@ -172,10 +262,11 @@ export interface RenderUpdate {
 
 export interface WolfcamState {
   running: boolean;
-  ready?: boolean;
   pid?: number;
   demo?: string | null;
   exitCode?: number | null;
+  /** It closed soon after starting with an error, so the demo most likely did not load. */
+  early?: boolean;
 }
 
 export interface Backend {
@@ -187,8 +278,6 @@ export interface Backend {
   /** Opens a folder in the system file manager. */
   openPath(path: string): Promise<void>;
   openUrl(url: string): Promise<void>;
-  /** URL usable in <audio>/<video> for a local file. */
-  fileUrl(path: string): string;
   readonly mock: boolean;
 }
 
@@ -222,7 +311,6 @@ async function create(): Promise<Backend> {
     reveal: (path) => opener.revealItemInDir(path),
     openPath: (path) => core.invoke("open_folder", { path }),
     openUrl: (url) => opener.openUrl(url),
-    fileUrl: (path) => core.convertFileSrc(path),
   };
 }
 

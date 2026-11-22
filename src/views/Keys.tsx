@@ -1,8 +1,8 @@
-import { Download, Plus, RotateCcw, Search, TriangleAlert, X } from "lucide-react";
+import { Download, Plus, RotateCcw, Search, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button, Modal, Toggle } from "../components/ui";
 import {
-  ALL_KEYS, canonicalKey, customBinds, KEY_GROUPS, keyFromCode, keyFromMouseButton, keysFor, prettyKey, sameBinds, WOLFCAM_DEFAULTS, WOLFDECK_LAYOUT,
+  ALL_KEYS, customBinds, KEY_GROUPS, keyFromCode, keyFromMouseButton, keysFor, prettyKey, sameBinds, WOLFCAM_DEFAULTS, WRAPPER_LAYOUT,
   type BindMap,
 } from "../lib/keys";
 import { useStore } from "../lib/store";
@@ -30,7 +30,7 @@ function KeyCap({ k, onRemove }: { k: string; onRemove?: () => void }) {
 }
 
 /** Captures the next key press, mouse button or wheel movement. */
-function CaptureDialog({ target, binds, reserved, onPick, onClose }: { target: Target; binds: BindMap; reserved: string | null; onPick: (key: string, command: string) => void; onClose: () => void }) {
+function CaptureDialog({ target, binds, onPick, onClose }: { target: Target; binds: BindMap; onPick: (key: string, command: string) => void; onClose: () => void }) {
   const [key, setKey] = useState<string | null>(null);
   const [command, setCommand] = useState(target.command ?? "");
 
@@ -49,8 +49,7 @@ function CaptureDialog({ target, binds, reserved, onPick, onClose }: { target: T
 
   const current = key ? binds[key] : undefined;
   const taken = current !== undefined && current.toLowerCase() !== command.trim().toLowerCase();
-  const isReserved = !!key && !!reserved && key === canonicalKey(reserved);
-  const ok = !!key && !!command.trim() && !isReserved;
+  const ok = !!key && !!command.trim();
 
   return (
     <Modal
@@ -94,22 +93,17 @@ function CaptureDialog({ target, binds, reserved, onPick, onClose }: { target: T
           <span className="field-hint">Several commands can be separated with semicolons. Quotes are not possible inside a bind.</span>
         </label>
       )}
-      {isReserved && <p className="notice notice-bad">{prettyKey(key!)} is the key WolfDeck uses to send commands to WolfcamQL on Windows (see Settings). Choose another.</p>}
-      {taken && !isReserved && <p className="notice">{prettyKey(key!)} is currently bound to "{describe(current!)}". Assigning it here replaces that.</p>}
+      {taken && <p className="notice">{prettyKey(key!)} is currently bound to "{describe(current!)}". Assigning it here replaces that.</p>}
     </Modal>
   );
 }
 
 export function KeysView() {
   const keys = useStore((s) => s.keys);
-  const running = useStore((s) => !!s.wolfcam.ready);
-  const controlKey = useStore((s) => s.settings.controlKey);
   const { setBinds, setKeysEnabled, readEngineBinds, toast } = useStore.getState();
   const [query, setQuery] = useState("");
   const [target, setTarget] = useState<Target | null>(null);
   const binds = keys.binds;
-  // The control key is only a real key press on Windows.
-  const reserved = navigator.userAgent.includes("Windows") ? controlKey || "F13" : null;
 
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -143,7 +137,6 @@ export function KeysView() {
     replaceAll(engine, "WolfcamQL's current binds");
   };
 
-  const reservedHit = reserved && binds[canonicalKey(reserved)];
   const count = Object.keys(binds).length;
 
   return (
@@ -153,7 +146,7 @@ export function KeysView() {
         <Toggle checked={keys.enabled} onChange={(v) => void setKeysEnabled(v)} label="Use these keys in WolfcamQL" />
         <span className="muted small">
           {keys.enabled
-            ? running ? "Changes are sent to WolfcamQL as you make them." : "Applied each time WolfDeck starts WolfcamQL."
+            ? "Applied each time Wolfcam Wrapper opens a demo in WolfcamQL."
             : "Off: WolfcamQL keeps its own binds and this list is not applied."}
         </span>
         <span className="spacer" />
@@ -164,13 +157,13 @@ export function KeysView() {
       </header>
       <div className="toolbar toolbar-sub">
         <span className="muted small">Load a layout:</span>
-        <Button small onClick={() => replaceAll(WOLFDECK_LAYOUT, "the WolfDeck layout")} title="Media-player keys for playback, WASD for the free camera, camera tools around V, U, O, P and the brackets">
-          <RotateCcw size={13} /> WolfDeck layout
+        <Button small onClick={() => replaceAll(WRAPPER_LAYOUT, "the Wolfcam Wrapper layout")} title="Media-player keys for playback, WASD for the free camera, camera tools around V, U, O, P and the brackets">
+          <RotateCcw size={13} /> Wolfcam Wrapper layout
         </Button>
         <Button small onClick={() => replaceAll(WOLFCAM_DEFAULTS, "the WolfcamQL defaults")} title="The binds WolfcamQL ships with">WolfcamQL defaults</Button>
         <Button small onClick={() => void importEngine()} title="Read the binds WolfcamQL has saved in its own config"><Download size={13} /> Import from WolfcamQL</Button>
         {keys.previous && (
-          <Button small onClick={() => replaceAll(keys.previous!, "the binds WolfcamQL had before WolfDeck managed them")} title="The binds WolfcamQL had when you first switched this on">
+          <Button small onClick={() => replaceAll(keys.previous!, "the binds WolfcamQL had before Wolfcam Wrapper managed them")} title="The binds WolfcamQL had when you first switched this on">
             Previous WolfcamQL binds
           </Button>
         )}
@@ -181,16 +174,11 @@ export function KeysView() {
       <div className="keys-scroll">
         {keys.enabled ? (
           <p className="notice">
-            Each time WolfDeck starts WolfcamQL it clears WolfcamQL's binds and sets the ones listed here, so this list is the whole keyboard. WolfcamQL then saves them in its own config as well.
+            Each time Wolfcam Wrapper starts WolfcamQL it clears WolfcamQL's binds and sets the ones listed here, so this list is the whole keyboard. WolfcamQL then saves them in its own config as well.
           </p>
         ) : (
           <p className="notice">
             This list is not applied yet. To start from the keys you already use, press <b>Import from WolfcamQL</b> first; then switch on <b>Use these keys in WolfcamQL</b>.
-          </p>
-        )}
-        {reservedHit && (
-          <p className="notice notice-bad">
-            <TriangleAlert size={13} /> {prettyKey(reserved!)} is bound to "{describe(reservedHit)}", but WolfDeck needs that key to send commands to WolfcamQL on Windows. Unbind it here or pick another control key in Settings.
           </p>
         )}
 
@@ -250,7 +238,6 @@ export function KeysView() {
         <CaptureDialog
           target={target}
           binds={binds}
-          reserved={reserved}
           onClose={() => setTarget(null)}
           onPick={(key, command) => {
             setBinds({ ...binds, [key]: command.replace(/"/g, "") });

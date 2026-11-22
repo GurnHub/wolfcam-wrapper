@@ -5,7 +5,7 @@ import { Timeline } from "../components/Timeline";
 import { Button, Empty, Modal, WeaponTag } from "../components/ui";
 import { backend, invoke, type DemoEntry, type DemoInfo, type Kill } from "../lib/backend";
 import { clipFromKills, clipFromRange } from "../lib/clips";
-import { clock, dateTime, fileSize, gameClock, stripExt, TEAM_NAMES } from "../lib/format";
+import { clock, dateTime, duration, fileSize, gameClock, stripExt, TEAM_NAMES } from "../lib/format";
 import { useStore } from "../lib/store";
 
 type SortKey = "fileName" | "map" | "gametypeName" | "povName" | "date" | "durationMs" | "killCount" | "size";
@@ -25,6 +25,23 @@ function sortValue(d: DemoEntry, key: SortKey): string | number {
   if (key === "date") return d.timestamp ?? d.modified;
   const v = d[key];
   return typeof v === "string" ? v.toLowerCase() : v;
+}
+
+
+/** Opens the Highlights view with every search limited to the library selection. */
+function findHighlights() {
+  const st = useStore.getState();
+  st.setFrags({ form: { scope: "selected" } });
+  st.setClutches({ form: { scope: "selected" } });
+  st.setGames({ form: { scope: "selected" } });
+  st.setView("highlights");
+}
+
+
+/** Damage and accuracy from the demo's final scoreboard, when it has one. */
+function scoreLine(info: DemoInfo, client: number): string {
+  const sc = info.scores.find((x) => x.client === client);
+  return sc ? ` · ${sc.damageGiven.toLocaleString()} dmg · ${sc.accuracy}%` : "";
 }
 
 export function LibraryView() {
@@ -91,7 +108,7 @@ export function LibraryView() {
   if (!settings.demoDirs.length) {
     return (
       <Empty title="No demo folders yet" action={<Button variant="primary" onClick={() => setView("settings")}>Open settings</Button>}>
-        Add the folders that hold your .dm_91 / .dm_90 / .dm_73 demos and WolfDeck will index them.
+        Add the folders that hold your .dm_91 / .dm_90 / .dm_73 demos and Wolfcam Wrapper will index them.
       </Empty>
     );
   }
@@ -209,7 +226,7 @@ export function LibraryView() {
         ) : selected.length > 1 ? (
           <BulkActions paths={selected} />
         ) : (
-          <Empty title="Select a demo">Double-click a demo to play it. Select one to see its players, kills and chat.</Empty>
+          <Empty title="Select a demo">Double-click a demo to open it in WolfcamQL. Select one to see its kills, players, rounds and chat.</Empty>
         )}
       </aside>
     </div>
@@ -228,7 +245,7 @@ function MapNotice({ map }: { map: string }) {
 }
 
 function BulkActions({ paths }: { paths: string[] }) {
-  const { rescan, toast, setView } = useStore.getState();
+  const { rescan, toast } = useStore.getState();
   const moveAll = async () => {
     const dir = await (await backend()).pickFolder("Move demos to");
     if (!dir) return;
@@ -253,7 +270,7 @@ function BulkActions({ paths }: { paths: string[] }) {
     <div className="detail-body">
       <h2>{paths.length} demos selected</h2>
       <div className="actions">
-        <Button onClick={() => setView("frags")}><Crosshair size={14} /> Find frags in selection</Button>
+        <Button onClick={() => findHighlights()}><Crosshair size={14} /> Find highlights in selection</Button>
         <Button onClick={() => void moveAll()}><FolderInput size={14} /> Move to folder…</Button>
         <Button variant="danger" onClick={() => void trashAll()}><Trash2 size={14} /> Move to recycle bin</Button>
       </div>
@@ -265,8 +282,8 @@ function DemoDetail({ demo }: { demo: DemoEntry }) {
   const info = useStore((s) => s.demoInfo[demo.path]) as DemoInfo | undefined;
   const meta = useStore((s) => s.meta[demo.path]) ?? {};
   const settings = useStore((s) => s.settings);
-  const { loadDemoInfo, play, setMeta, addClip, toast, rescan, setSelected, setView } = useStore.getState();
-  const [tab, setTab] = useState<"kills" | "players" | "chat">("kills");
+  const { loadDemoInfo, play, setMeta, addClip, toast, rescan, setSelected } = useStore.getState();
+  const [tab, setTab] = useState<"kills" | "players" | "rounds" | "chat">("kills");
   const [who, setWho] = useState<number | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [tagText, setTagText] = useState("");
@@ -326,9 +343,9 @@ function DemoDetail({ demo }: { demo: DemoEntry }) {
       <MapNotice map={demo.map} />
 
       <div className="actions">
-        <Button variant="primary" disabled={!!demo.error} onClick={() => void play(demo.path)}><Play size={14} /> Play</Button>
+        <Button variant="primary" disabled={!!demo.error} onClick={() => void play(demo.path)}><Play size={14} /> Open in WolfcamQL</Button>
         <Button disabled={!info} onClick={() => info?.gameStartTime != null && void play(demo.path, { startTime: info.gameStartTime })} title="Skip the warmup">
-          Play from match start
+          Open at match start
         </Button>
         <Button
           disabled={!info}
@@ -341,7 +358,7 @@ function DemoDetail({ demo }: { demo: DemoEntry }) {
         >
           <Plus size={14} /> Match as clip
         </Button>
-        <Button onClick={() => { setSelected([demo.path]); setView("frags"); }} disabled={!!demo.error}><Crosshair size={14} /> Find frags</Button>
+        <Button onClick={() => { setSelected([demo.path]); findHighlights(); }} disabled={!!demo.error}><Crosshair size={14} /> Find highlights</Button>
       </div>
       <div className="actions actions-quiet">
         <Button small variant="ghost" onClick={async () => (await backend()).reveal(demo.path)}><FolderSearch size={13} /> Show in folder</Button>
@@ -376,6 +393,9 @@ function DemoDetail({ demo }: { demo: DemoEntry }) {
           <div className="tabs">
             <button type="button" className={tab === "kills" ? "is-active" : ""} onClick={() => setTab("kills")}>Kills <em>{kills.length}</em></button>
             <button type="button" className={tab === "players" ? "is-active" : ""} onClick={() => setTab("players")}>Players <em>{info.players.length}</em></button>
+            {info.rounds.length > 0 && (
+              <button type="button" className={tab === "rounds" ? "is-active" : ""} onClick={() => setTab("rounds")}>Rounds <em>{info.rounds.length}</em></button>
+            )}
             <button type="button" className={tab === "chat" ? "is-active" : ""} onClick={() => setTab("chat")}>Chat <em>{info.chats.length}</em></button>
             {who != null && (
               <button type="button" className="chip" onClick={() => setWho(null)}>
@@ -391,7 +411,7 @@ function DemoDetail({ demo }: { demo: DemoEntry }) {
                   <span className="kill-text">
                     <b>{k.killerName}</b> <WeaponTag weapon={k.weapon} /> {k.victimName}
                   </span>
-                  <button type="button" className="icon-btn" title="Play from just before this kill" onClick={() => playKill(k)}><Play size={13} /></button>
+                  <button type="button" className="icon-btn" title="Open in WolfcamQL just before this kill" onClick={() => playKill(k)}><Play size={13} /></button>
                   <button type="button" className="icon-btn" title="Add as clip" onClick={() => clipKill(k)}><Plus size={13} /></button>
                 </div>
               ))}
@@ -402,10 +422,32 @@ function DemoDetail({ demo }: { demo: DemoEntry }) {
                   <button type="button" className="link" onClick={() => { setWho(p.clientNum); setTab("kills"); }} title="Show this player's kills and deaths">
                     {p.name}{p.clientNum === info.povClient && <em> recorded this demo</em>}
                   </button>
-                  <span className="num muted">{p.team === 3 ? "spectator" : `${tally.get(p.clientNum)?.kills ?? 0} / ${tally.get(p.clientNum)?.deaths ?? 0}`}</span>
-                  <button type="button" className="icon-btn" title="Play from this player's point of view" disabled={p.team === 3} onClick={() => void play(demo.path, { pov: p.clientNum, startTime: info.gameStartTime ?? undefined })}>
+                  <span className="num muted" title="Kills / deaths, then damage and accuracy from the final scoreboard">
+                    {p.team === 3 ? "spectator" : `${tally.get(p.clientNum)?.kills ?? 0} / ${tally.get(p.clientNum)?.deaths ?? 0}`}
+                    {scoreLine(info, p.clientNum)}
+                  </span>
+                  <button type="button" className="icon-btn" title="Open in WolfcamQL from this player's point of view" disabled={p.team === 3} onClick={() => void play(demo.path, { pov: p.clientNum, startTime: info.gameStartTime ?? undefined })}>
                     <Play size={13} />
                   </button>
+                </div>
+              ))}
+            {tab === "rounds" &&
+              info.rounds.map((r) => (
+                <div key={r.number} className="round-row">
+                  <div className="round-head">
+                    <span className={`team team-${r.winner}`} title={r.winner ? `${TEAM_NAMES[r.winner]} won` : "Winner not known"} />
+                    <b>Round {r.number}</b>
+                    <span className="muted">{r.winner ? `${TEAM_NAMES[r.winner]} won` : "no result"} · {duration(r.endTime - r.startTime)}</span>
+                    <span className="spacer" />
+                    <button type="button" className="icon-btn" title="Open in WolfcamQL at the start of this round" onClick={() => void play(demo.path, { startTime: r.startTime - 2000 })}><Play size={13} /></button>
+                  </div>
+                  {info.clutches.filter((c) => c.round === r.number && c.serverTime >= r.startTime && c.serverTime <= r.endTime).map((c, i) => (
+                    <div key={i} className="round-clutch">
+                      <span className={c.won ? "good" : "bad"}>1v{c.enemies}</span>
+                      <span>{c.name} was the last one alive{c.kills ? ` and got ${c.kills} kill${c.kills === 1 ? "" : "s"}` : ""}; {c.won ? "won" : "lost"}</span>
+                      <button type="button" className="icon-btn" title="Open in WolfcamQL following this player" onClick={() => void play(demo.path, { startTime: c.serverTime - settings.clipLeadIn * 1000, pov: c.client })}><Play size={13} /></button>
+                    </div>
+                  ))}
                 </div>
               ))}
             {tab === "chat" &&

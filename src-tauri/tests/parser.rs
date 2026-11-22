@@ -2,10 +2,10 @@
 //! `christian-lime-aimbot.dm_73`, a sample demo distributed with WolfcamQL).
 //! Expected values were cross-checked against WolfcamQL's own demo pre-parse.
 
-use wolfdeck_lib::demo::parse_file;
-use wolfdeck_lib::library::{find_frags, FragFilter};
+use wolfcam_wrapper_lib::demo::parse_file;
+use wolfcam_wrapper_lib::library::{find_frags, FragFilter};
 
-fn fixture() -> wolfdeck_lib::demo::DemoInfo {
+fn fixture() -> wolfcam_wrapper_lib::demo::DemoInfo {
     parse_file(std::path::Path::new("tests/fixtures/ffa-excerpt.dm_73")).expect("fixture parses")
 }
 
@@ -57,7 +57,7 @@ fn finds_multi_kills() {
 #[test]
 fn truncated_file_still_yields_data() {
     let bytes = std::fs::read("tests/fixtures/ffa-excerpt.dm_73").unwrap();
-    let d = wolfdeck_lib::demo::parser::parse_bytes(&bytes[..bytes.len() / 2], 73).unwrap();
+    let d = wolfcam_wrapper_lib::demo::parser::parse_bytes(&bytes[..bytes.len() / 2], 73).unwrap();
     assert_eq!(d.map, "qzdm15");
     assert!(d.warning.is_some());
     assert!(d.snapshots > 500);

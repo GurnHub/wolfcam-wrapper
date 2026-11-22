@@ -1,37 +1,21 @@
-//! Launching WolfcamQL and talking to it while it runs.
+//! Starting WolfcamQL.
 //!
-//! WolfcamQL has no remote-control API, so WolfDeck uses what the engine
-//! offers:
-//!
-//! * **Start-up**: the command line stays minimal (the engine caps it at
-//!   1023 characters and 32 commands). Cvars go into `wolfdeck/pre.cfg`,
-//!   executed before the demo loads, and everything else into
-//!   `wolfdeck/start.cfg`, which `wolfdeck/session.cfg` runs once the demo
-//!   has loaded.
-//! * **Live commands**: each batch is written to a `wolfdeck/b<slot>.cfg`
-//!   file and listed in `wolfdeck/cmd.cfg`, guarded by a sequence cvar so a
-//!   batch runs exactly once no matter how often the file is executed. The engine is
-//!   then told to execute `cmd.cfg`: on Linux/macOS through its command pipe
-//!   (`com_pipefile`), on Windows by posting a key press to its window for a
-//!   key that WolfDeck binds to `execq wolfdeck/cmd.cfg`.
-//! * **Feedback**: the engine console is mirrored to `qconsole.log`
-//!   (`logfile 2`), which is tailed here.
+//! Wolfcam Wrapper only starts the engine; it does not control it while it runs.
+//! The command line stays minimal (the engine caps it at 1023 characters and
+//! 32 commands). Cvars go into `wolfcam-wrapper/pre.cfg`, executed before the demo
+//! loads, and everything else into `wolfcam-wrapper/start.cfg`, which
+//! `wolfcam-wrapper/session.cfg` runs once the demo has loaded. Renders follow the
+//! engine's progress through its console log (`logfile 2`), read with
+//! [`LogTail`].
 
-use crate::paths::{resolve_home, DECK_DIR, GAME_DIR};
+use crate::paths::{resolve_home, WRAPPER_DIR, GAME_DIR};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-pub const PIPE_NAME: &str = "wolfdeck.pipe";
-/// How many recent batches stay listed in cmd.cfg. Batch files and the
-/// cvars that reference them are reused in a ring of this size, so the engine
-/// may fall this many batches behind (e.g. while loading) without losing any.
-const BATCH_WINDOW: u64 = 64;
+use std::time::{Duration, Instant};
 
 /// Receives events destined for the UI.
 pub trait Sink: Send + Sync + 'static {
@@ -53,8 +37,6 @@ pub struct LaunchSpec {
     /// Config text executed after the demo has loaded.
     pub config: String,
     pub extra_args: Vec<String>,
-    /// Key used to trigger command execution on Windows, e.g. "F13".
-    pub control_key: String,
     /// Folders put in front of PATH for the engine, e.g. where ffmpeg lives
     /// when WolfcamQL pipes video into it.
     pub path_prepend: Vec<String>,
@@ -64,8 +46,8 @@ pub fn game_home(home: &str) -> PathBuf {
     resolve_home(home).join(GAME_DIR)
 }
 
-pub fn deck_dir(home: &str) -> PathBuf {
-    game_home(home).join(DECK_DIR)
+pub fn wrapper_dir(home: &str) -> PathBuf {
+    game_home(home).join(WRAPPER_DIR)
 }
 
 /// The engine splits its command line on '+', so an argument containing one
@@ -124,15 +106,10 @@ pub fn needs_video_restart(spec: &LaunchSpec) -> bool {
 pub fn build_args(spec: &LaunchSpec) -> Result<Vec<String>, String> {
     let home = resolve_home(&spec.home);
     let mut a: Vec<String> = vec!["+set".into(), "fs_homepath".into(), engine_arg(&home.to_string_lossy())];
-    for (k, v) in [("logfile", "2"), ("wd_seq", "0")] {
-        a.extend(["+set".into(), k.into(), v.into()]);
-    }
-    if cfg!(unix) {
-        a.extend(["+set".into(), "com_pipefile".into(), PIPE_NAME.into()]);
-    }
+    a.extend(["+set".into(), "logfile".into(), "2".into()]);
     a.extend(spec.extra_args.iter().filter(|s| !s.trim().is_empty()).cloned());
     if spec.cvars.iter().any(|(k, _)| !clean_token(k).is_empty()) {
-        a.extend(["+exec".into(), format!("{DECK_DIR}/pre.cfg")]);
+        a.extend(["+exec".into(), format!("{WRAPPER_DIR}/pre.cfg")]);
         if needs_video_restart(spec) {
             a.push("+vid_restart".into());
         }
@@ -140,7 +117,7 @@ pub fn build_args(spec: &LaunchSpec) -> Result<Vec<String>, String> {
     if let Some(demo) = spec.demo.as_ref().filter(|d| !d.is_empty()) {
         a.extend(["+demo".into(), engine_arg(demo)]);
     }
-    a.extend(["+exec".into(), format!("{DECK_DIR}/session.cfg")]);
+    a.extend(["+exec".into(), format!("{WRAPPER_DIR}/session.cfg")]);
     // Engine limits: 1023 characters in total (it aborts beyond that) and 32 '+' commands.
     let length: usize = a.iter().map(|s| s.len() + 3).sum();
     let commands = a.iter().filter(|s| s.starts_with('+')).count();
@@ -150,23 +127,8 @@ pub fn build_args(spec: &LaunchSpec) -> Result<Vec<String>, String> {
     Ok(a)
 }
 
-fn key_bind_line(control_key: &str) -> String {
-    let key = if control_key.trim().is_empty() { "F13" } else { control_key.trim() };
-    format!("bind {} \"execq {DECK_DIR}/cmd.cfg\"\n", clean_token(key))
-}
-
-/// On Windows the command channel itself is a key bind. A batch that
-/// removes binds gets that bind added back at its end, or it would be the
-/// last batch the engine ever receives.
-pub fn keep_control_bind(mut body: String, control_key: &str, key_channel: bool) -> String {
-    if key_channel && body.lines().any(|l| l.trim_start().to_ascii_lowercase().starts_with("unbind")) {
-        body.push_str(&key_bind_line(control_key));
-    }
-    body
-}
-
 fn start_script() -> String {
-    format!("// Generated by WolfDeck.\nexec {DECK_DIR}/start.cfg\n")
+    format!("// Generated by Wolfcam Wrapper.\nexec {WRAPPER_DIR}/start.cfg\n")
 }
 
 /// `session.cfg` runs straight after `+demo`, but the demo is not always loaded by then: for
@@ -174,39 +136,27 @@ fn start_script() -> String {
 /// Steam Workshop items over the following frames. Commands run during that wait are lost or
 /// misapplied (a seek is undone, `follow` and `at` do not exist yet). So wait, a few frames at a
 /// time, until WolfcamQL clears `r_uiFullScreen`, which it does right before loading the game code
-/// for playback; then run the session's commands. Live commands queue behind the wait.
+/// for playback; then run the session's commands.
 fn wait_for_demo_script() -> String {
     format!(
-        "// Generated by WolfDeck: waits for the demo to load, then runs start.cfg.\n\
-         set wd_start \"exec {DECK_DIR}/start.cfg\"\n\
-         set wd_wait \"wait 5; vstr wd_poll\"\n\
-         set wd_poll \"ifeq r_uiFullScreen 0 wd_start wd_wait\"\n\
-         vstr wd_poll\n"
+        "// Generated by Wolfcam Wrapper: waits for the demo to load, then runs start.cfg.\n\
+         set wcw_start \"exec {WRAPPER_DIR}/start.cfg\"\n\
+         set wcw_wait \"wait 5; vstr wcw_poll\"\n\
+         set wcw_poll \"ifeq r_uiFullScreen 0 wcw_start wcw_wait\"\n\
+         vstr wcw_poll\n"
     )
 }
 
 /// Writes the generated config files and removes leftovers of older sessions.
 pub fn prepare_files(spec: &LaunchSpec) -> Result<PathBuf, String> {
-    let dir = deck_dir(&spec.home);
+    let dir = wrapper_dir(&spec.home);
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    if let Ok(rd) = std::fs::read_dir(&dir) {
-        for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().into_owned();
-            if n.starts_with('b') && n.ends_with(".cfg") && n[1..n.len() - 4].chars().all(|c| c.is_ascii_digit()) {
-                let _ = std::fs::remove_file(e.path());
-            }
-        }
-    }
-    let mut start = String::from("// Generated by WolfDeck: the session's commands, run once the demo has loaded.\n");
+    let mut start = String::from("// Generated by Wolfcam Wrapper: the session's commands, run once the demo has loaded.\n");
     start.push_str(&spec.config);
     start.push('\n');
-    // After the session's own commands, so an `unbindall` in them cannot remove it.
-    if cfg!(windows) {
-        start.push_str(&key_bind_line(&spec.control_key));
-    }
-    start.push_str("echo WD_READY\n");
+    start.push_str("echo WCW_READY\n");
     let session = if spec.demo.as_deref().is_some_and(|d| !d.is_empty()) { wait_for_demo_script() } else { start_script() };
-    let mut pre = String::from("// Generated by WolfDeck: settings applied before the demo loads.\n");
+    let mut pre = String::from("// Generated by Wolfcam Wrapper: settings applied before the demo loads.\n");
     for (k, v) in &spec.cvars {
         let (k, v) = (clean_token(k), clean_token(v));
         if !k.is_empty() {
@@ -216,7 +166,6 @@ pub fn prepare_files(spec: &LaunchSpec) -> Result<PathBuf, String> {
     std::fs::write(dir.join("pre.cfg"), pre).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("start.cfg"), start).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("session.cfg"), session).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join("cmd.cfg"), "// no commands yet\n").map_err(|e| e.to_string())?;
     Ok(dir)
 }
 
@@ -303,231 +252,58 @@ impl LogTail {
     }
 }
 
-/// Builds cmd.cfg: one guarded entry per recent batch, oldest first.
-pub fn command_index(latest: u64) -> String {
-    let first = latest.saturating_sub(BATCH_WINDOW - 1).max(1);
-    let mut s = String::new();
-    for n in first..=latest {
-        let slot = n % BATCH_WINDOW;
-        s.push_str(&format!("set wd_b{slot} \"set wd_seq {n}; execq {DECK_DIR}/b{slot}.cfg\"\niflt wd_seq {n} wd_b{slot}\n"));
-    }
-    s
-}
-
-fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-    // The engine may have the target open for a moment; retry briefly.
-    for _ in 0..20 {
-        if std::fs::rename(&tmp, path).is_ok() {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    std::fs::write(path, text).map_err(|e| e.to_string())
-}
-
 struct Running {
     child: Child,
-    home: String,
-    control_key: String,
-    seq: u64,
-    stop: Arc<AtomicBool>,
+    started: Instant,
 }
 
-/// The one WolfcamQL process WolfDeck is driving interactively.
+/// The WolfcamQL process started to watch a demo. Starting another demo
+/// replaces it; nothing is sent to it while it runs.
 #[derive(Default)]
 pub struct Session {
     inner: Mutex<Option<Running>>,
 }
 
+/// A process that ends this soon after starting most likely failed to load the demo.
+const EARLY_EXIT: Duration = Duration::from_secs(20);
+
 impl Session {
     pub fn is_running(&self) -> bool {
         let mut g = self.inner.lock().unwrap();
-        match g.as_mut() {
-            Some(r) => matches!(r.child.try_wait(), Ok(None)),
-            None => false,
-        }
+        g.as_mut().map(|r| matches!(r.child.try_wait(), Ok(None))).unwrap_or(false)
     }
 
     pub fn launch(self: &Arc<Self>, spec: LaunchSpec, sink: Arc<dyn Sink>) -> Result<u32, String> {
         self.stop();
         let child = spawn(&spec)?;
         let pid = child.id();
-        let stop = Arc::new(AtomicBool::new(false));
-        *self.inner.lock().unwrap() =
-            Some(Running { child, home: spec.home.clone(), control_key: spec.control_key.clone(), seq: 0, stop: stop.clone() });
-        sink.emit("wolfcam-state", json!({ "running": true, "ready": false, "pid": pid, "demo": spec.demo }));
-
+        *self.inner.lock().unwrap() = Some(Running { child, started: Instant::now() });
+        sink.emit("wolfcam-state", json!({ "running": true, "pid": pid, "demo": spec.demo }));
         let this = self.clone();
-        std::thread::spawn(move || {
-            let mut tail = LogTail::new(&spec.home);
-            let mut ready = false;
-            loop {
-                std::thread::sleep(Duration::from_millis(150));
-                let lines = tail.poll();
-                if !ready && lines.iter().any(|l| l.starts_with("WD_READY")) {
-                    ready = true;
-                    sink.emit("wolfcam-state", json!({ "running": true, "ready": true, "pid": pid, "demo": spec.demo }));
-                }
-                publish_lines(&*sink, lines);
-                if stop.load(Ordering::Relaxed) {
-                    return; // replaced or stopped; whoever did that reports the state
-                }
-                let exited = {
-                    let mut g = this.inner.lock().unwrap();
-                    match g.as_mut() {
-                        Some(r) if r.child.id() == pid => match r.child.try_wait() {
-                            Ok(None) => None,
-                            Ok(Some(st)) => Some(st.code()),
-                            Err(_) => Some(None),
-                        },
-                        _ => return,
-                    }
-                };
-                if let Some(code) = exited {
-                    publish_lines(&*sink, tail.poll());
-                    let mut g = this.inner.lock().unwrap();
-                    if g.as_ref().map(|r| r.child.id() == pid).unwrap_or(false) {
-                        *g = None;
-                    }
-                    sink.emit("wolfcam-state", json!({ "running": false, "exitCode": code }));
-                    return;
-                }
-            }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(500));
+            let mut g = this.inner.lock().unwrap();
+            let Some(r) = g.as_mut().filter(|r| r.child.id() == pid) else { return }; // replaced or stopped
+            let code = match r.child.try_wait() {
+                Ok(None) => continue,
+                Ok(Some(st)) => st.code(),
+                Err(_) => None,
+            };
+            let early = r.started.elapsed() < EARLY_EXIT && code != Some(0);
+            *g = None;
+            sink.emit("wolfcam-state", json!({ "running": false, "exitCode": code, "early": early }));
+            return;
         });
         Ok(pid)
     }
 
-    /// Queues console commands for execution in the running engine.
-    pub fn send(&self, commands: &[String]) -> Result<(), String> {
-        let mut g = self.inner.lock().unwrap();
-        let r = g.as_mut().ok_or("WolfcamQL is not running")?;
-        if !matches!(r.child.try_wait(), Ok(None)) {
-            return Err("WolfcamQL is not running".into());
-        }
-        let body: String = commands
-            .iter()
-            .map(|c| c.replace(['\n', '\r'], " "))
-            .filter(|c| !c.trim().is_empty())
-            .map(|c| c + "\n")
-            .collect();
-        if body.is_empty() {
-            return Ok(());
-        }
-        let body = keep_control_bind(body, &r.control_key, cfg!(windows));
-        let dir = deck_dir(&r.home);
-        r.seq += 1;
-        write_atomic(&dir.join(format!("b{}.cfg", r.seq % BATCH_WINDOW)), &body)?;
-        write_atomic(&dir.join("cmd.cfg"), &command_index(r.seq))?;
-        trigger(r.child.id(), &r.home, &r.control_key)
-    }
-
-    /// Asks the engine to quit, then makes sure the process is gone.
+    /// Closes the engine Wolfcam Wrapper started, if it is still open.
     pub fn stop(&self) {
-        let _ = self.send(&["quit".to_string()]);
-        let taken = self.inner.lock().unwrap().take();
-        if let Some(mut r) = taken {
-            r.stop.store(true, Ordering::Relaxed);
-            for _ in 0..20 {
-                if !matches!(r.child.try_wait(), Ok(None)) {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
+        if let Some(mut r) = self.inner.lock().unwrap().take() {
             let _ = r.child.kill();
             let _ = r.child.wait();
         }
     }
-}
-
-fn publish_lines(sink: &dyn Sink, mut lines: Vec<String>) {
-    if lines.is_empty() {
-        return;
-    }
-    for l in &lines {
-        // Printed by the engine's `servertime` command.
-        if let Some(v) = l.strip_prefix("serverTime:").and_then(|v| v.trim().parse::<f64>().ok()) {
-            sink.emit("wolfcam-time", json!({ "serverTime": v }));
-        }
-    }
-    // The UI console only needs the gist when the engine floods its log.
-    const KEEP: usize = 600;
-    if lines.len() > KEEP {
-        let dropped = lines.len() - KEEP;
-        lines.drain(KEEP / 2..KEEP / 2 + dropped);
-        lines.insert(KEEP / 2, format!("... {dropped} lines skipped ..."));
-    }
-    sink.emit("wolfcam-log", json!(lines));
-}
-
-/// Tells the engine to execute cmd.cfg now.
-#[cfg(unix)]
-pub fn trigger(_pid: u32, home: &str, _control_key: &str) -> Result<(), String> {
-    use std::io::Write;
-    use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
-    let pipe = game_home(home).join(PIPE_NAME);
-    let is_fifo = std::fs::metadata(&pipe).map(|m| m.file_type().is_fifo()).unwrap_or(false);
-    if !is_fifo {
-        return Err("WolfcamQL is still starting (command pipe not ready)".into());
-    }
-    // O_NONBLOCK: never hang if the engine is not reading (0o4000 on Linux, 0x4 on macOS/BSD).
-    let nonblock = if cfg!(target_os = "linux") { 0o4000 } else { 0x4 };
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .custom_flags(nonblock)
-        .open(&pipe)
-        .map_err(|_| "WolfcamQL is still starting (command pipe not ready)".to_string())?;
-    f.write_all(format!("execq {DECK_DIR}/cmd.cfg\n").as_bytes()).map_err(|e| e.to_string())
-}
-
-#[cfg(windows)]
-fn key_codes(name: &str) -> (u32, u32) {
-    // (virtual key, scan code) for F1..F15; anything else falls back to F13.
-    let n: u32 = name.trim().trim_start_matches(['F', 'f']).parse().unwrap_or(13);
-    let n = if (1..=15).contains(&n) { n } else { 13 };
-    let scan = match n {
-        1..=10 => 0x3B + n - 1,
-        11 => 0x57,
-        12 => 0x58,
-        _ => 0x64 + n - 13,
-    };
-    (0x70 + n - 1, scan)
-}
-
-#[cfg(windows)]
-pub fn trigger(pid: u32, _home: &str, control_key: &str) -> Result<(), String> {
-    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_KEYDOWN, WM_KEYUP,
-    };
-    struct Find {
-        pid: u32,
-        hwnd: HWND,
-    }
-    unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let find = &mut *(lparam as *mut Find);
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, &mut pid);
-        if pid == find.pid && IsWindowVisible(hwnd) != 0 {
-            find.hwnd = hwnd;
-            return 0;
-        }
-        1
-    }
-    let mut find = Find { pid, hwnd: std::ptr::null_mut() };
-    unsafe { EnumWindows(Some(each), &mut find as *mut Find as LPARAM) };
-    if find.hwnd.is_null() {
-        return Err("WolfcamQL window not found yet".into());
-    }
-    let (vk, scan) = key_codes(control_key);
-    let down = (1 | (scan << 16)) as LPARAM;
-    let up = (1u32 | (scan << 16) | (1 << 30) | (1 << 31)) as i32 as LPARAM;
-    unsafe {
-        PostMessageW(find.hwnd, WM_KEYDOWN, vk as usize, down);
-        PostMessageW(find.hwnd, WM_KEYUP, vk as usize, up);
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -536,7 +312,7 @@ mod tests {
 
     #[test]
     fn command_line_is_built_in_engine_order() {
-        let home = std::env::temp_dir().join(format!("wolfdeck-args-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("wolfcam-wrapper-args-{}", std::process::id()));
         std::fs::create_dir_all(home.join(GAME_DIR)).unwrap();
         let mut spec = LaunchSpec {
             exe: "/opt/wc/wolfcamql".into(),
@@ -548,9 +324,9 @@ mod tests {
         let a = build_args(&spec).unwrap();
         assert_eq!(&a[..3], ["+set", "fs_homepath", spec.home.as_str()]);
         let at = |x: &str| a.iter().position(|y| y == x).unwrap_or_else(|| panic!("missing {x} in {a:?}"));
-        assert!(at("wolfdeck/pre.cfg") < at("+vid_restart") && at("+vid_restart") < at("+demo"));
+        assert!(at("wolfcam-wrapper/pre.cfg") < at("+vid_restart") && at("+vid_restart") < at("+demo"));
         assert_eq!(a[at("+demo") + 1], "\"/demos/a+b.dm_91\"", "'+' must be quoted for the engine");
-        assert_eq!(a[a.len() - 2..], ["+exec", "wolfdeck/session.cfg"]);
+        assert_eq!(a[a.len() - 2..], ["+exec", "wolfcam-wrapper/session.cfg"]);
         assert!(!a.iter().any(|x| x == "r_mode"), "cvars travel in pre.cfg, not on the command line");
 
         // No restart once the saved engine config already has the latched values.
@@ -562,14 +338,15 @@ mod tests {
         assert!(!is_latched("r_gamma") && !is_latched("r_fullscreen") && !is_latched("s_volume") && !is_latched("cg_fov"));
 
         prepare_files(&spec).unwrap();
-        let pre = std::fs::read_to_string(home.join(GAME_DIR).join("wolfdeck/pre.cfg")).unwrap();
+        let pre = std::fs::read_to_string(home.join(GAME_DIR).join("wolfcam-wrapper/pre.cfg")).unwrap();
         assert!(pre.contains("set r_mode \"-1\"\nset cg_fov \"100\"\nset r_picmip \"0\"\n"));
         // With a demo, session.cfg waits for it to load before running start.cfg (the session's commands).
-        let read = |f: &str| std::fs::read_to_string(home.join(GAME_DIR).join("wolfdeck").join(f)).unwrap();
+        let read = |f: &str| std::fs::read_to_string(home.join(GAME_DIR).join("wolfcam-wrapper").join(f)).unwrap();
         spec.config = "seekservertime 5000\n".into();
         prepare_files(&spec).unwrap();
-        assert!(read("session.cfg").contains("ifeq r_uiFullScreen 0 wd_start wd_wait") && read("session.cfg").contains("exec wolfdeck/start.cfg"));
-        assert!(read("start.cfg").contains("seekservertime 5000\n") && read("start.cfg").trim_end().ends_with("echo WD_READY"));
+        assert!(read("session.cfg").contains("ifeq r_uiFullScreen 0 wcw_start wcw_wait") && read("session.cfg").contains("exec wolfcam-wrapper/start.cfg"));
+        assert!(read("start.cfg").contains("seekservertime 5000\n") && read("start.cfg").trim_end().ends_with("echo WCW_READY"));
+        assert!(!a.iter().any(|x| x == "com_pipefile"), "nothing is sent to the engine while it runs");
         spec.demo = None;
         prepare_files(&spec).unwrap();
         assert!(!read("session.cfg").contains("ifeq"), "nothing to wait for without a demo");
@@ -581,34 +358,14 @@ mod tests {
     }
 
     #[test]
-    fn control_bind_survives_bind_changes() {
-        let binds = "unbindall\nbind SPACE \"pause\"\n".to_string();
-        let kept = keep_control_bind(binds.clone(), "F14", true);
-        assert!(kept.ends_with("bind F14 \"execq wolfdeck/cmd.cfg\"\n"), "{kept}");
-        assert_eq!(keep_control_bind(binds.clone(), "F14", false), binds, "not needed where a pipe is used");
-        assert_eq!(keep_control_bind("pause\n".into(), "", true), "pause\n");
-        assert!(keep_control_bind("UNBIND f13\n".into(), "", true).contains("bind F13 "));
-    }
-
-    #[test]
     fn cvar_tokens_cannot_inject_commands() {
         assert_eq!(clean_token("1\"; quit"), "1 quit");
         assert_eq!(clean_token("bad;name\n"), "badname");
     }
 
     #[test]
-    fn command_index_keeps_a_sliding_window() {
-        let one = command_index(1);
-        assert_eq!(one, "set wd_b1 \"set wd_seq 1; execq wolfdeck/b1.cfg\"\niflt wd_seq 1 wd_b1\n");
-        let many = command_index(200);
-        assert!(many.starts_with("set wd_b9 \"set wd_seq 137; execq wolfdeck/b9.cfg\""), "oldest listed batch is 137, slot 137 % 64");
-        assert_eq!(many.matches("iflt").count(), 64);
-        assert!(many.trim_end().ends_with("iflt wd_seq 200 wd_b8"));
-    }
-
-    #[test]
     fn log_tail_returns_only_new_complete_lines() {
-        let home = std::env::temp_dir().join(format!("wolfdeck-tail-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("wolfcam-wrapper-tail-{}", std::process::id()));
         let game = home.join(GAME_DIR);
         std::fs::create_dir_all(&game).unwrap();
         let log = game.join("qconsole.log");

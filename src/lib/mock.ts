@@ -1,8 +1,8 @@
 // Stand-in backend used when the UI runs in a plain browser (`npm run dev`
-// without Tauri). It serves generated demos and simulates WolfcamQL and
+// without Tauri). It serves generated demos and simulates opening WolfcamQL and
 // render progress so every screen can be exercised.
 
-import type { Backend, DemoEntry, DemoInfo, Frag, FragFilter, Kill, RenderJob } from "./backend";
+import type { Backend, Clutch, ClutchFilter, ClutchHit, DemoEntry, DemoInfo, Frag, FragFilter, GameFilter, GameStat, Kill, PlayerScore, Round, RenderJob } from "./backend";
 
 function rng(seed: number) {
   return () => {
@@ -48,6 +48,28 @@ function makeDemo(i: number): { entry: DemoEntry; info: DemoInfo } {
     }
     t += 4000 + Math.floor(r() * (mode === "Duel" ? 40000 : 12000));
   }
+  // Clan Arena: one-minute rounds; sometimes someone is left alone against the rest.
+  const rounds: Round[] = [];
+  const clutches: Clutch[] = [];
+  if (mode === "CA") {
+    for (let n = 1, rt = gameStart; rt + 60000 < first + durationMs; n++, rt += 60000) {
+      const winner = r() < 0.5 ? 1 : 2;
+      rounds.push({ number: n, startTime: rt, endTime: rt + 45000, winner });
+      if (r() < 0.45) {
+        const team = r() < 0.5 ? 1 : 2;
+        const who = players.filter((p) => p.team === team)[Math.floor(r() * 4)];
+        const t = rt + 20000 + Math.floor(r() * 20000);
+        clutches.push({ round: n, serverTime: t, clockMs: t - gameStart, client: who.clientNum, name: who.name, team, enemies: 1 + Math.floor(r() * 4), won: team === winner, kills: team === winner ? 1 + Math.floor(r() * 3) : Math.floor(r() * 2), roundEnd: rt + 45000 });
+      }
+    }
+  }
+  const scores: PlayerScore[] = mode === "CA" || mode === "Duel"
+    ? players.map((p) => {
+      const k = kills.filter((x) => x.killer === p.clientNum && !x.ownGoal).length;
+      const d = kills.filter((x) => x.victim === p.clientNum).length;
+      return { client: p.clientNum, name: p.name, team: p.team, score: k * 4 + Math.floor(r() * 20), kills: k, deaths: d, accuracy: 25 + Math.floor(r() * 30), damageGiven: 1500 + Math.floor(r() * 5000), damageTaken: mode === "CA" ? 1500 + Math.floor(r() * 4000) : null };
+    })
+    : [];
   const timestamp = 1700000000 + i * 86400 * 3 + Math.floor(r() * 80000);
   const d = new Date(timestamp * 1000);
   const stamp = `${d.getFullYear()}_${String(d.getMonth() + 1).padStart(2, "0")}_${String(d.getDate()).padStart(2, "0")}`;
@@ -61,12 +83,15 @@ function makeDemo(i: number): { entry: DemoEntry; info: DemoInfo } {
       { serverTime: first + 3000, clockMs: 3000, team: false, text: `${players[0].name}: gl hf` },
       { serverTime: first + durationMs - 2000, clockMs: durationMs - 14000, team: false, text: `${players[count - 1].name}: gg` },
     ],
+    rounds, clutches, scores,
+    teamScores: mode === "CA" ? [rounds.filter((x) => x.winner === 1).length, rounds.filter((x) => x.winner === 2).length] : null,
     warning: i % 17 === 5 ? "file is truncated" : null,
   };
   const entry: DemoEntry = {
     path: `${dir}/${fileName}`, fileName, dir, size: Math.floor(durationMs * (2.5 + r() * 2)), modified: timestamp + 900,
     protocol: info.protocol, map, gametypeName: mode, hostname: info.hostname, timestamp, povName: info.povName,
     players: players.map((p) => p.name), durationMs, killCount: kills.length, povKills: kills.filter((k) => k.killer === 0 && !k.ownGoal).length,
+    roundCount: rounds.length, clutchCount: clutches.length,
     error: null, warning: info.warning,
   };
   return { entry, info };
@@ -103,6 +128,37 @@ function findFrags(info: DemoInfo, entry: DemoEntry, f: FragFilter): Frag[] {
   return out;
 }
 
+const matches = (name: string, wanted: string[]) => !wanted.length || wanted.some((w) => name.toLowerCase().includes(w.toLowerCase()));
+
+function findClutches(info: DemoInfo, entry: DemoEntry, f: ClutchFilter): ClutchHit[] {
+  return info.clutches
+    .filter((c) => c.enemies >= Math.max(1, f.minEnemies) && (!f.wonOnly || c.won) && (!f.povOnly || c.client === info.povClient) && matches(c.name, f.players))
+    .map((c) => ({ ...c, path: entry.path, fileName: entry.fileName, map: entry.map, gametypeName: entry.gametypeName, timestamp: entry.timestamp }));
+}
+
+function gameStats(info: DemoInfo, entry: DemoEntry): GameStat[] {
+  return info.players.map((p) => {
+    const mine = info.kills.filter((k) => !k.warmup && (k.killer === p.clientNum || k.victim === p.clientNum));
+    let kills = 0, deaths = 0, spree = 0, bestSpree = 0, multi = 0, bestMulti = 0, last = -1e9;
+    for (const k of mine) {
+      if (k.victim === p.clientNum) { deaths++; spree = 0; multi = 0; continue; }
+      if (k.ownGoal) continue;
+      kills++; spree++; multi = k.serverTime - last <= 3000 ? multi + 1 : 1; last = k.serverTime;
+      bestSpree = Math.max(bestSpree, spree); bestMulti = Math.max(bestMulti, multi);
+    }
+    const sc = info.scores.find((x) => x.client === p.clientNum);
+    const mineClutches = info.clutches.filter((c) => c.client === p.clientNum);
+    const ts = info.teamScores;
+    const result = ts && p.team > 0 ? Math.sign(p.team === 1 ? ts[0] - ts[1] : ts[1] - ts[0]) : 0;
+    return {
+      path: entry.path, fileName: entry.fileName, map: entry.map, gametypeName: entry.gametypeName, timestamp: entry.timestamp, durationMs: entry.durationMs,
+      startTime: info.gameStartTime ?? info.firstServerTime, client: p.clientNum, name: p.name, team: p.team, pov: p.clientNum === info.povClient,
+      kills, deaths, suicides: 0, bestSpree, bestMulti, clutches: mineClutches.length, clutchesWon: mineClutches.filter((c) => c.won).length,
+      score: sc?.score ?? null, accuracy: sc?.accuracy ?? null, damageGiven: sc?.damageGiven ?? null, damageTaken: sc?.damageTaken ?? null, result,
+    };
+  });
+}
+
 export function createMockBackend(): Backend {
   const all = Array.from({ length: 140 }, (_, i) => makeDemo(i + 1));
   const byPath = new Map(all.map((d) => [d.entry.path, d]));
@@ -110,7 +166,7 @@ export function createMockBackend(): Backend {
   const emit = (event: string, payload: unknown) => listeners.get(event)?.forEach((h) => h(payload as never));
   const stores = new Map<string, unknown>();
   try {
-    for (const [k, v] of Object.entries(JSON.parse(localStorage.getItem("wolfdeck-mock") ?? "{}"))) stores.set(k, v);
+    for (const [k, v] of Object.entries(JSON.parse(localStorage.getItem("wolfcam-wrapper-mock") ?? "{}"))) stores.set(k, v);
   } catch {
     /* storage unavailable: start empty */
   }
@@ -139,7 +195,7 @@ export function createMockBackend(): Backend {
     store_save: (a) => {
       stores.set(a.name, a.value);
       try {
-        localStorage.setItem("wolfdeck-mock", JSON.stringify(Object.fromEntries(stores)));
+        localStorage.setItem("wolfcam-wrapper-mock", JSON.stringify(Object.fromEntries(stores)));
       } catch {
         /* ignore */
       }
@@ -159,7 +215,7 @@ export function createMockBackend(): Backend {
       })),
     read_text: () => "// sample file\n",
     write_game_file: (a) => `/home/demo/.wolfcamql/wolfcam-ql/${a.name}`,
-    install_hud: (a) => `wolfdeck/hud-${String(a.menu).split(/[\\/]/).pop()!.replace(/\.menu$/i, "")}.cfg`,
+    install_hud: (a) => `wolfcam-wrapper/hud-${String(a.menu).split(/[\\/]/).pop()!.replace(/\.menu$/i, "")}.cfg`,
     game_folder: (a) => [`/home/demo/.wolfcamql/wolfcam-ql/${a.sub}`, 13.2 * 1024 ** 3],
     disk_free: () => 13.2 * 1024 ** 3,
     installed_maps: () => MAPS.filter((m) => m !== "cure" && m !== "hiddenfortress"),
@@ -183,20 +239,30 @@ export function createMockBackend(): Backend {
           return d ? findFrags(d.info, d.entry, a.filter) : [];
         })
         .sort((x, y) => y.kills.length - x.kills.length),
+    search_clutches: (a) =>
+      (a.paths as string[])
+        .flatMap((p) => {
+          const d = byPath.get(p);
+          return d ? findClutches(d.info, d.entry, a.filter) : [];
+        })
+        .sort((x, y) => Number(y.won) - Number(x.won) || y.enemies - x.enemies || y.kills - x.kills),
+    search_games: (a) => {
+      const f = a.filter as GameFilter;
+      return (a.paths as string[])
+        .flatMap((p) => {
+          const d = byPath.get(p);
+          return d ? gameStats(d.info, d.entry) : [];
+        })
+        .filter((g) => g.kills >= f.minKills && (!f.povOnly || g.pov) && (!f.gametypes.length || f.gametypes.includes(g.gametypeName)) && matches(g.name, f.players))
+        .sort((x, y) => y.kills - x.kills);
+    },
     demo_trash: () => undefined,
     demo_rename: (a) => a.path,
     demo_move: (a) => (a.paths as string[]).length,
     launch: (a) => {
       const spec = a.spec as { demo: string };
-      emit("wolfcam-state", { running: true, ready: false, pid: 4242, demo: spec.demo });
-      setTimeout(() => {
-        emit("wolfcam-state", { running: true, ready: true, pid: 4242, demo: spec.demo });
-        emit("wolfcam-log", ["----- finished R_Init -----", "demo parse protocol 91", "WD_READY"]);
-      }, 700);
+      emit("wolfcam-state", { running: true, pid: 4242, demo: spec.demo });
       return 4242;
-    },
-    send_commands: (a) => {
-      emit("wolfcam-log", (a.commands as string[]).map((c) => `]${c}`));
     },
     stop_wolfcam: () => emit("wolfcam-state", { running: false, exitCode: 0 }),
     wolfcam_running: () => false,
@@ -228,6 +294,5 @@ export function createMockBackend(): Backend {
     reveal: async () => undefined,
     openPath: async () => undefined,
     openUrl: async (url) => void window.open(url, "_blank"),
-    fileUrl: (p) => p,
   };
 }

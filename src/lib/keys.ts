@@ -1,5 +1,5 @@
 // WolfcamQL key binds: the catalog of bindable actions, the layouts
-// WolfDeck offers, and the translation between browser key events and the
+// Wolfcam Wrapper offers, and the translation between browser key events and the
 // engine's key names.
 
 export interface KeyAction {
@@ -133,7 +133,7 @@ export const KEY_GROUPS: KeyGroup[] = [
 ];
 
 /** A layout built for demo viewing and movie making: media-player keys, WASD free camera, camera tools on one hand. */
-export const WOLFDECK_LAYOUT: BindMap = {
+export const WRAPPER_LAYOUT: BindMap = {
   SPACE: "pause",
   LEFTARROW: "rewind 5", RIGHTARROW: "fastforward 5",
   DOWNARROW: "rewind 30", UPARROW: "fastforward 30",
@@ -226,7 +226,7 @@ export function prettyKey(key: string): string {
   return PRETTY[k] ?? (k.length === 1 ? k.toUpperCase() : k);
 }
 
-/** The engine ignores case in key names; WolfDeck stores letters lower-case and names upper-case. */
+/** The engine ignores case in key names; Wolfcam Wrapper stores letters lower-case and names upper-case. */
 export function canonicalKey(key: string): string {
   return key.length === 1 ? key.toLowerCase() : key.toUpperCase();
 }

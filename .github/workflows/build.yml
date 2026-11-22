@@ -49,6 +49,6 @@ jobs:
         run: npm run tauri build -- --bundles ${{ matrix.bundles }}
       - uses: actions/upload-artifact@v4
         with:
-          name: wolfdeck-${{ runner.os }}
+          name: wolfcam-wrapper-${{ runner.os }}
           path: ${{ matrix.artifact }}
           if-no-files-found: error

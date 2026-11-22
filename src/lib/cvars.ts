@@ -37,11 +37,11 @@ const LATCHED = new Set([
 ]);
 
 /**
- * Settings WolfDeck always sends, with these values unless the profile sets them, so behaviour
+ * Settings Wolfcam Wrapper always sends, with these values unless the profile sets them, so behaviour
  * does not depend on what WolfcamQL happens to have saved. cg_useDemoFov 2 makes the free
  * camera zoom along with the demo taker (issue #7).
  */
-export const WOLFDECK_DEFAULTS: Record<string, string> = { cg_useDemoFov: "0" };
+export const WRAPPER_DEFAULTS: Record<string, string> = { cg_useDemoFov: "0" };
 
 export function needsRestart(name: string): boolean {
   return LATCHED.has(name.toLowerCase());
@@ -97,7 +97,7 @@ export const CVAR_GROUPS: CvarGroup[] = [
       range("cg_fov", "Field of view", "90", 60, 140, 1),
       range("cg_zoomFov", "Zoom field of view", "60", 10, 100, 1),
       select("cg_useDemoFov", "Demo taker's field of view", "0", [["0", "Ignore (use the field of view above)"], ["1", "Use their field of view"], ["2", "Follow their zoom"]],
-        "Quake Live (.dm_91) demos only. \"Follow their zoom\" also zooms the free camera whenever the demo taker zooms. WolfDeck sets this to Ignore unless a profile chooses otherwise."),
+        "Quake Live (.dm_91) demos only. \"Follow their zoom\" also zooms the free camera whenever the demo taker zooms. Wolfcam Wrapper sets this to Ignore unless a profile chooses otherwise."),
       bool("cg_thirdPerson", "Third person camera", "0"),
       range("cg_thirdPersonRange", "Third person distance", "80", 20, 400, 5),
       range("cg_thirdPersonAngle", "Third person angle", "0", 0, 359, 1),

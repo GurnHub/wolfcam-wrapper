@@ -94,20 +94,22 @@ jobs:
           find dist-release -type f -exec mv -t release-files {} +
           cd release-files
           [ -n "$(ls)" ] || { echo "no installers were built"; exit 1; }
+          # GitHub would turn spaces in asset names into dots; use underscores so the checksums match.
+          for f in *' '*; do [ -e "$f" ] && mv -- "$f" "${f// /_}"; done
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
           cd ..
           notes="docs/releases/${TAG}.md"
           if [ ! -f "$notes" ]; then
             notes="$RUNNER_TEMP/notes.md"
-            echo "WolfDeck ${TAG}" > "$notes"
+            echo "Wolfcam Wrapper ${TAG}" > "$notes"
           fi
           echo "notes=$notes" >> "$GITHUB_OUTPUT"
           case "$TAG" in
             *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
             *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
           esac
-          name="WolfDeck ${TAG#v}"
+          name="Wolfcam Wrapper ${TAG#v}"
           name="${name/-alpha./ alpha }"; name="${name/-beta./ beta }"; name="${name/-rc./ release candidate }"
           echo "name=$name" >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2

@@ -20,7 +20,7 @@ function describe(error: Error): string {
   return stack.startsWith(head) ? stack : `${head}\n${stack}`;
 }
 
-/** Saves the error as last-error.json in WolfDeck's data folder, for bug reports. */
+/** Saves the error as last-error.json in Wolfcam Wrapper's data folder, for bug reports. */
 export function recordError(error: unknown, where: string) {
   const e = error instanceof Error ? error : new Error(String(error));
   const value = { time: new Date().toISOString(), name: e.name, message: e.message, stack: e.stack ?? "", where, userAgent: navigator.userAgent };
@@ -55,14 +55,14 @@ export class ErrorBoundary extends Component<Props, State> {
         <h2>This view ran into a problem</h2>
         <p className="muted">
           {this.props.whole
-            ? "WolfDeck ran into a problem. Please report this with the text below; it is also saved as last-error.json in WolfDeck's data folder."
-            : "The rest of WolfDeck still works. Please report this with the text below; it is also saved as last-error.json in WolfDeck's data folder."}
+            ? "Wolfcam Wrapper ran into a problem. Please report this with the text below; it is also saved as last-error.json in Wolfcam Wrapper's data folder."
+            : "The rest of Wolfcam Wrapper still works. Please report this with the text below; it is also saved as last-error.json in Wolfcam Wrapper's data folder."}
         </p>
         <pre>{describe(error)}</pre>
         <div className="actions">
           <button type="button" className="btn" onClick={() => this.setState({ error: null })}>Try again</button>
           <button type="button" className="btn" onClick={() => void navigator.clipboard?.writeText(describe(error))}>Copy error</button>
-          {this.props.whole && <button type="button" className="btn" onClick={() => location.reload()}>Reload WolfDeck</button>}
+          {this.props.whole && <button type="button" className="btn" onClick={() => location.reload()}>Reload Wolfcam Wrapper</button>}
         </div>
       </div>
     );

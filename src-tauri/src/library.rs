@@ -1,6 +1,7 @@
-//! Demo library: folder scanning with a parse cache, and the frag finder.
+//! Demo library: folder scanning with a parse cache, and the highlight
+//! searches (frag finder, last man alive, per-player game stats).
 
-use crate::demo::parser::{is_demo_file, parse_file, DemoInfo, Kill};
+use crate::demo::parser::{is_demo_file, parse_file, Clutch, DemoInfo, Kill};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -8,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Bump when `DemoInfo` or the parser changes in a way that invalidates cached results.
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 3;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +31,11 @@ pub struct DemoEntry {
     pub duration_ms: i32,
     pub kill_count: u32,
     pub pov_kills: u32,
+    /// Rounds played (round-based modes) and last-man-alive moments in them.
+    #[serde(default)]
+    pub round_count: u32,
+    #[serde(default)]
+    pub clutch_count: u32,
     pub error: Option<String>,
     pub warning: Option<String>,
 }
@@ -87,6 +93,8 @@ fn entry_from(path: &Path, size: u64, modified: u64, parsed: &Result<DemoInfo, S
             e.duration_ms = i.duration_ms;
             e.kill_count = i.kills.len() as u32;
             e.pov_kills = i.kills.iter().filter(|k| k.killer == i.pov_client && !k.own_goal).count() as u32;
+            e.round_count = i.rounds.len() as u32;
+            e.clutch_count = i.clutches.len() as u32;
             e.warning = i.warning.clone();
         }
         Err(err) => e.error = Some(err.clone()),
@@ -283,6 +291,217 @@ pub fn search_frags(cache_dir: &Path, paths: &[String], filter: &FragFilter) -> 
     all
 }
 
+fn file_name_of(path: &str) -> String {
+    Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+fn name_matches(name: &str, wanted: &[String]) -> bool {
+    let name = name.to_lowercase();
+    wanted.iter().all(|w| w.is_empty()) || wanted.iter().any(|w| !w.is_empty() && name.contains(&w.to_lowercase()))
+}
+
+#[derive(Deserialize, Default, Clone)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClutchFilter {
+    /// Player name must contain one of these (case-insensitive). Empty: anyone.
+    pub players: Vec<String>,
+    pub pov_only: bool,
+    /// Fewest enemies alive when the player was left alone.
+    pub min_enemies: i32,
+    pub won_only: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ClutchHit {
+    pub path: String,
+    pub file_name: String,
+    pub map: String,
+    pub gametype_name: String,
+    pub timestamp: Option<i64>,
+    #[serde(flatten)]
+    pub clutch: Clutch,
+}
+
+pub fn find_clutches(info: &DemoInfo, path: &str, filter: &ClutchFilter) -> Vec<ClutchHit> {
+    info.clutches
+        .iter()
+        .filter(|c| c.enemies >= filter.min_enemies.max(1))
+        .filter(|c| !filter.won_only || c.won)
+        .filter(|c| !filter.pov_only || c.client == info.pov_client)
+        .filter(|c| name_matches(&c.name, &filter.players))
+        .map(|c| ClutchHit {
+            path: path.to_string(),
+            file_name: file_name_of(path),
+            map: info.map.clone(),
+            gametype_name: info.gametype_name.clone(),
+            timestamp: info.timestamp,
+            clutch: c.clone(),
+        })
+        .collect()
+}
+
+pub fn search_clutches(cache_dir: &Path, paths: &[String], filter: &ClutchFilter) -> Vec<ClutchHit> {
+    let mut all: Vec<ClutchHit> = paths
+        .par_iter()
+        .flat_map(|p| get_demo(cache_dir, p).map(|info| find_clutches(&info, p, filter)).unwrap_or_default())
+        .collect();
+    // Won rounds first, then the hardest odds, then the most kills.
+    all.sort_by(|a, b| {
+        (b.clutch.won, b.clutch.enemies, b.clutch.kills)
+            .cmp(&(a.clutch.won, a.clutch.enemies, a.clutch.kills))
+            .then(a.path.cmp(&b.path))
+            .then(a.clutch.server_time.cmp(&b.clutch.server_time))
+    });
+    all.truncate(5000);
+    all
+}
+
+#[derive(Deserialize, Default, Clone)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GameFilter {
+    pub players: Vec<String>,
+    pub pov_only: bool,
+    /// Gametype names as the parser reports them ("CA", "Duel" ...). Empty: any.
+    pub gametypes: Vec<String>,
+    pub min_kills: i32,
+}
+
+/// One player's game in one demo.
+#[derive(Serialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GameStat {
+    pub path: String,
+    pub file_name: String,
+    pub map: String,
+    pub gametype_name: String,
+    pub timestamp: Option<i64>,
+    pub duration_ms: i32,
+    /// Server time the match started (or the demo, when that is not known).
+    pub start_time: i32,
+    pub client: i32,
+    pub name: String,
+    pub team: i32,
+    pub pov: bool,
+    /// From the kill feed, outside warmup.
+    pub kills: i32,
+    pub deaths: i32,
+    pub suicides: i32,
+    /// Most kills in a row without dying.
+    pub best_spree: i32,
+    /// Most kills with no more than `MULTI_KILL_GAP_MS` between them.
+    pub best_multi: i32,
+    pub clutches: i32,
+    pub clutches_won: i32,
+    /// From the final scoreboard, when the demo has one in a known format.
+    pub score: Option<i32>,
+    pub accuracy: Option<i32>,
+    pub damage_given: Option<i32>,
+    pub damage_taken: Option<i32>,
+    /// 1 won, -1 lost, 0 not known or a draw.
+    pub result: i32,
+}
+
+/// Longest gap between two kills that still counts them as one multi-kill.
+pub const MULTI_KILL_GAP_MS: i32 = 3000;
+
+pub fn game_stats(info: &DemoInfo, path: &str) -> Vec<GameStat> {
+    let kills: Vec<&Kill> = info.kills.iter().filter(|k| !k.warmup).collect();
+    // One row per client that played; the latest name and playing team win.
+    let mut players: Vec<(i32, String, i32)> = Vec::new();
+    for p in &info.players {
+        match players.iter_mut().find(|(c, _, _)| *c == p.client_num) {
+            Some(e) => {
+                e.1 = p.name.clone();
+                if p.team != 3 {
+                    e.2 = p.team;
+                }
+            }
+            None => players.push((p.client_num, p.name.clone(), p.team)),
+        }
+    }
+    let top_score = info.scores.iter().map(|s| s.score).max();
+    let mut out = Vec::new();
+    for (client, name, team) in players {
+        let mine = |k: &&&Kill| k.killer == client || k.victim == client;
+        let involved: Vec<&&Kill> = kills.iter().filter(mine).collect();
+        let score = info.scores.iter().find(|s| s.client == client);
+        if team == 3 && involved.is_empty() && score.is_none() {
+            continue;
+        }
+        let mut st = GameStat {
+            path: path.to_string(),
+            file_name: file_name_of(path),
+            map: info.map.clone(),
+            gametype_name: info.gametype_name.clone(),
+            timestamp: info.timestamp,
+            duration_ms: info.duration_ms,
+            start_time: info.game_start_time.unwrap_or(info.first_server_time),
+            client,
+            name,
+            team,
+            pov: client == info.pov_client,
+            score: score.map(|s| s.score),
+            accuracy: score.map(|s| s.accuracy),
+            damage_given: score.map(|s| s.damage_given),
+            damage_taken: score.and_then(|s| s.damage_taken),
+            ..Default::default()
+        };
+        let (mut spree, mut multi, mut last_kill) = (0, 0, None::<i32>);
+        for k in involved {
+            if k.victim == client {
+                st.deaths += 1;
+                if k.killer == client || k.own_goal && k.killer == crate::demo::parser::WORLD {
+                    st.suicides += 1;
+                }
+                spree = 0;
+                multi = 0;
+            } else if !k.own_goal {
+                st.kills += 1;
+                spree += 1;
+                multi = if last_kill.is_some_and(|t| k.server_time - t <= MULTI_KILL_GAP_MS) { multi + 1 } else { 1 };
+                last_kill = Some(k.server_time);
+                st.best_spree = st.best_spree.max(spree);
+                st.best_multi = st.best_multi.max(multi);
+            }
+        }
+        st.clutches = info.clutches.iter().filter(|c| c.client == client).count() as i32;
+        st.clutches_won = info.clutches.iter().filter(|c| c.client == client && c.won).count() as i32;
+        st.result = match (info.team_scores, score, top_score) {
+            (Some([red, blue]), _, _) if team == 1 || team == 2 => {
+                let (us, them) = if team == 1 { (red, blue) } else { (blue, red) };
+                (us - them).signum()
+            }
+            (None, Some(s), Some(top)) if info.scores.len() > 1 => {
+                if s.score == top && info.scores.iter().filter(|o| o.score == top).count() == 1 {
+                    1
+                } else if s.score < top {
+                    -1
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        };
+        out.push(st);
+    }
+    out
+}
+
+pub fn search_games(cache_dir: &Path, paths: &[String], filter: &GameFilter) -> Vec<GameStat> {
+    let mut all: Vec<GameStat> = paths
+        .par_iter()
+        .flat_map(|p| get_demo(cache_dir, p).map(|info| game_stats(&info, p)).unwrap_or_default())
+        .filter(|g| g.kills >= filter.min_kills)
+        .filter(|g| !filter.pov_only || g.pov)
+        .filter(|g| filter.gametypes.is_empty() || filter.gametypes.iter().any(|t| t.eq_ignore_ascii_case(&g.gametype_name)))
+        .filter(|g| name_matches(&g.name, &filter.players))
+        .collect();
+    all.sort_by(|a, b| b.kills.cmp(&a.kills).then(a.path.cmp(&b.path)).then(a.client.cmp(&b.client)));
+    all.truncate(5000);
+    all
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +559,34 @@ mod tests {
         assert_eq!(find_frags(&d, "x", &pov).len(), 4);
         let own = FragFilter { include_own_goals: true, ..pov };
         assert_eq!(find_frags(&d, "x", &own).len(), 5);
+    }
+
+    #[test]
+    fn per_player_stats_from_kills_and_scoreboard() {
+        use crate::demo::parser::{PlayerInfo, PlayerScore};
+        let player = |c: i32, name: &str, team: i32| PlayerInfo { client_num: c, name: name.into(), raw_name: name.into(), team, clan: String::new() };
+        let mut d = demo();
+        d.gametype_name = "CA".into();
+        d.players = vec![player(1, "alpha", 1), player(2, "bravo", 2), player(9, "victim", 2), player(5, "watcher", 3)];
+        d.kills.push(Kill { victim: 1, killer: 2, killer_name: "bravo".into(), ..kill(5000, 2, "bravo", "RG") });
+        d.kills.push(Kill { warmup: true, ..kill(500, 1, "alpha", "RL") });
+        d.kills.push(Kill { victim: 1, own_goal: true, ..kill(32000, 1, "alpha", "RL") });
+        d.kills.sort_by_key(|k| k.server_time); // the parser lists kills in time order
+        d.team_scores = Some([10, 7]);
+        d.scores = vec![PlayerScore { client: 1, score: 50, accuracy: 40, damage_given: 3000, damage_taken: Some(2500), ..Default::default() }];
+        let s = game_stats(&d, "/d/x.dm_91");
+        assert_eq!(s.len(), 3, "the spectator who never played is left out");
+        let a = s.iter().find(|g| g.name == "alpha").unwrap();
+        // alpha: kills at 1000, 2500, 4000 (multi of 3), killed at 5000, kill at 30000; the warmup kill does not count.
+        assert_eq!((a.kills, a.deaths, a.best_multi, a.best_spree), (4, 2, 3, 3));
+        assert_eq!(a.suicides, 1, "the team kill at 31000 is not a suicide, the death at 32000 is");
+        assert_eq!((a.score, a.accuracy, a.damage_given, a.damage_taken), (Some(50), Some(40), Some(3000), Some(2500)));
+        assert_eq!((a.result, a.pov), (1, true));
+        let b = s.iter().find(|g| g.name == "bravo").unwrap();
+        assert_eq!((b.kills, b.deaths, b.result, b.score), (2, 0, -1, None));
+
+        let f = GameFilter { players: vec!["BRA".into()], ..Default::default() };
+        assert_eq!(game_stats(&d, "x").into_iter().filter(|g| name_matches(&g.name, &f.players)).count(), 1);
     }
 
     #[test]

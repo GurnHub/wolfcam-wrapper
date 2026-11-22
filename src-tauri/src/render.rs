@@ -88,7 +88,7 @@ pub fn capture_script(job: &RenderJob) -> String {
     let start = job.start_time;
     let end = job.end_time.max(start + 100);
     let mut s = String::new();
-    s.push_str("\n// --- WolfDeck capture ---\n");
+    s.push_str("\n// --- Wolfcam Wrapper capture ---\n");
     s.push_str(&format!("cl_freezeDemo 0\ntimescale {}\n", job.speed()));
     if let Some(p) = job.pov {
         s.push_str(&follow_line(p));
@@ -98,11 +98,11 @@ pub fn capture_script(job: &RenderJob) -> String {
     s.push_str(&format!("at {start} video {video} name {name}\n"));
     for step in 1..10 {
         let t = start as i64 + (end as i64 - start as i64) * step / 10;
-        s.push_str(&format!("at {t} echo WD_PROGRESS {}\n", step * 10));
+        s.push_str(&format!("at {t} echo WCW_PROGRESS {}\n", step * 10));
     }
     s.push_str(&format!("at {end} stopvideo\n"));
     s.push_str(&format!("at {} quit\n", end + 250));
-    s.push_str("echo WD_READY\n");
+    s.push_str("echo WCW_READY\n");
     s
 }
 
@@ -305,7 +305,6 @@ fn run_job(job: &RenderJob, base: &RenderBase, sink: &dyn Sink, cancel: &AtomicB
         demo: Some(job.demo.clone()),
         config: format!("{}\n{}", job.config, capture_script(&capture_job)),
         extra_args: base.extra_args.clone(),
-        control_key: String::new(),
         path_prepend,
     };
     update("capturing", 0.0, "Starting WolfcamQL");
@@ -320,13 +319,13 @@ fn run_job(job: &RenderJob, base: &RenderBase, sink: &dyn Sink, cancel: &AtomicB
     let exit = loop {
         std::thread::sleep(Duration::from_millis(200));
         for line in tail.poll() {
-            if let Some(p) = line.strip_prefix("WD_PROGRESS ").and_then(|p| p.trim().parse::<f64>().ok()) {
+            if let Some(p) = line.strip_prefix("WCW_PROGRESS ").and_then(|p| p.trim().parse::<f64>().ok()) {
                 update("capturing", p / 100.0, "Recording");
-            } else if line.starts_with("WD_READY") {
+            } else if line.starts_with("WCW_READY") {
                 ready = true;
                 update("capturing", 0.0, "Seeking to the clip");
             }
-            if line.starts_with("WD_PROGRESS ") || line.starts_with("WD_READY") {
+            if line.starts_with("WCW_PROGRESS ") || line.starts_with("WCW_READY") {
                 last_activity = Instant::now();
             }
             let l = line.to_lowercase();
@@ -458,7 +457,7 @@ mod tests {
         assert!(pos("at 1 follow 3") < pos("seekservertime 96000"));
         assert!(!s.contains("\nfollow "), "a bare follow before the first frame crashes the engine");
         assert!(pos("seekservertime 96000") < pos("at 100000 video avi name my_clip__1"));
-        assert!(pos("at 100000 video") < pos("at 105000 echo WD_PROGRESS 50"));
+        assert!(pos("at 100000 video") < pos("at 105000 echo WCW_PROGRESS 50"));
         assert!(pos("at 110000 stopvideo") < pos("at 110250 quit"));
     }
 
@@ -490,7 +489,7 @@ mod tests {
 
     #[test]
     fn outputs_are_matched_by_exact_base_name() {
-        let d = std::env::temp_dir().join(format!("wolfdeck-out-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("wolfcam-wrapper-out-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         for f in [
             "clip.avi", "clip-0001.avi", "clip.wav", "clip-depth.avi", "clip-left-0000000003.tga", "clip-ffmpeg.log",

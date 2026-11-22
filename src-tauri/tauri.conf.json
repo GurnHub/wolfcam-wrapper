@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "WolfDeck",
-  "version": "0.1.0",
-  "identifier": "io.github.wolfdeck.app",
+  "productName": "Wolfcam Wrapper",
+  "version": "0.2.0",
+  "identifier": "io.github.wolfcamwrapper.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "WolfDeck",
+        "title": "Wolfcam Wrapper",
         "width": 1280,
         "height": 800,
         "minWidth": 1000,
@@ -20,13 +20,7 @@
       }
     ],
     "security": {
-      "csp": null,
-      "assetProtocol": {
-        "enable": true,
-        "scope": [
-          "**"
-        ]
-      }
+      "csp": null
     }
   },
   "bundle": {
@@ -39,8 +33,8 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "shortDescription": "Front end for WolfcamQL",
-    "longDescription": "Demo library, frag finder, live remote control and batch capture for WolfcamQL.",
+    "shortDescription": "Demo library and highlight finder for WolfcamQL",
+    "longDescription": "Demo library, frag finder, last-man-alive and top-game search, clip rendering, and config and key editors for WolfcamQL.",
     "license": "GPL-2.0-or-later",
     "category": "Video"
   }

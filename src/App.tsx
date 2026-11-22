@@ -1,20 +1,18 @@
-import { Clapperboard, Crosshair, FolderOpen, Keyboard, MonitorPlay, Settings as SettingsIcon, SlidersHorizontal, Square, TriangleAlert } from "lucide-react";
+import { Clapperboard, FolderOpen, Keyboard, Settings as SettingsIcon, SlidersHorizontal, Sparkles, Square, TriangleAlert } from "lucide-react";
 import { useEffect } from "react";
 import { baseName } from "./lib/format";
 import { useStore, type View } from "./lib/store";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ClipsView } from "./views/Clips";
 import { ConfigView } from "./views/Config";
-import { FragsView } from "./views/Frags";
+import { HighlightsView } from "./views/Highlights";
 import { KeysView } from "./views/Keys";
 import { LibraryView } from "./views/Library";
-import { PlayerView } from "./views/Player";
 import { SettingsView } from "./views/Settings";
 
 const NAV: { id: View; label: string; icon: typeof FolderOpen }[] = [
   { id: "library", label: "Library", icon: FolderOpen },
-  { id: "player", label: "Player", icon: MonitorPlay },
-  { id: "frags", label: "Frag finder", icon: Crosshair },
+  { id: "highlights", label: "Highlights", icon: Sparkles },
   { id: "clips", label: "Clips & render", icon: Clapperboard },
   { id: "config", label: "Config", icon: SlidersHorizontal },
   { id: "keys", label: "Keys", icon: Keyboard },
@@ -28,12 +26,11 @@ export default function App() {
   const clips = useStore((x) => x.clips);
   const rendering = useStore((x) => x.rendering);
   const wolfcam = useStore((x) => x.wolfcam);
-  const playingDemo = useStore((x) => x.playingDemo);
   const toasts = useStore((x) => x.toasts);
   const install = useStore((x) => x.install);
   const mock = useStore((x) => x.mock);
   const { setView, stop, dismissToast } = useStore.getState();
-  const s = { ready, view, clips, rendering, wolfcam, playingDemo, toasts, install, mock, setView, stop, dismissToast };
+  const s = { ready, view, clips, rendering, wolfcam, toasts, install, mock, setView, stop, dismissToast };
   useEffect(() => {
     void useStore.getState().init();
   }, []);
@@ -49,8 +46,8 @@ export default function App() {
         <div className="brand">
           <span className="brand-mark">W</span>
           <div>
-            <strong>WolfDeck</strong>
-            <small>for WolfcamQL</small>
+            <strong>Wolfcam Wrapper</strong>
+            <small>demos &amp; highlights</small>
           </div>
         </div>
         <ul>
@@ -78,10 +75,10 @@ export default function App() {
             <div className="status status-on">
               <span className="dot" />
               <div>
-                <strong>{s.wolfcam.ready ? "WolfcamQL running" : "WolfcamQL starting"}</strong>
-                <small title={s.playingDemo ?? ""}>{s.playingDemo ? baseName(s.playingDemo) : ""}</small>
+                <strong>WolfcamQL open</strong>
+                <small title={s.wolfcam.demo ?? ""}>{s.wolfcam.demo ? baseName(s.wolfcam.demo) : ""}</small>
               </div>
-              <button type="button" className="icon-btn" title="Quit WolfcamQL" onClick={() => void s.stop()}>
+              <button type="button" className="icon-btn" title="Close WolfcamQL" onClick={() => void s.stop()}>
                 <Square size={13} />
               </button>
             </div>
@@ -90,7 +87,7 @@ export default function App() {
               <span className="dot" />
               <div>
                 <strong>WolfcamQL idle</strong>
-                <small>{s.mock ? "sample data (no backend)" : "double-click a demo to play"}</small>
+                <small>{s.mock ? "sample data (no backend)" : "double-click a demo to open it"}</small>
               </div>
             </div>
           )}
@@ -99,8 +96,7 @@ export default function App() {
       <main className="main">
         <ErrorBoundary resetKey={s.view}>
         {s.view === "library" && <LibraryView />}
-        {s.view === "player" && <PlayerView />}
-        {s.view === "frags" && <FragsView />}
+        {s.view === "highlights" && <HighlightsView />}
         {s.view === "clips" && <ClipsView />}
         {s.view === "config" && <ConfigView />}
         {s.view === "keys" && <KeysView />}

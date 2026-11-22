@@ -94,7 +94,7 @@ export function SettingsView() {
           )}
         </div>
         <div className="form-grid">
-          <PathField label="WolfcamQL executable" kind="file" value={settings.wolfcamExe} onChange={(v) => set({ wolfcamExe: v })} suggestions={detected?.wolfcamExe} placeholder="wolfcamql.exe" hint="WolfDeck starts your existing WolfcamQL; it does not include or change it." />
+          <PathField label="WolfcamQL executable" kind="file" value={settings.wolfcamExe} onChange={(v) => set({ wolfcamExe: v })} suggestions={detected?.wolfcamExe} placeholder="wolfcamql.exe" hint="Wolfcam Wrapper starts your existing WolfcamQL; it does not include or change it." />
           <PathField label="Quake Live folder" kind="folder" value={settings.qlPath} onChange={(v) => set({ qlPath: v })} suggestions={detected?.quakeLive} placeholder="…/steamapps/common/Quake Live" hint="Only used to copy the game's pak files into WolfcamQL (Sync paks)." />
           <PathField label="WolfcamQL home folder" kind="folder" value={settings.wolfcamHome} onChange={(v) => set({ wolfcamHome: v })} placeholder={detected?.wolfcamHome || "default"} hint="Where WolfcamQL keeps configs, videos and cameras. Leave empty for the default." />
         </div>
@@ -154,16 +154,16 @@ export function SettingsView() {
             <input type="number" min={0} max={60} step={0.5} value={settings.clipLeadOut} onChange={(e) => set({ clipLeadOut: Math.max(0, Number(e.target.value) || 0) }, false)} />
           </Field>
         </div>
-        <p className="muted small">Applied when a clip is created from a kill or a frag finder result. Each clip can be adjusted afterwards.</p>
+        <p className="muted small">Applied when a clip is created from a kill or a highlight. Each clip can be adjusted afterwards.</p>
       </section>
 
       <section className="card">
         <h3>Help</h3>
         <div className="btn-row">
           <Button onClick={async () => (await backend()).openUrl("https://github.com/brugal/wolfcamql/blob/master/README-wolfcam.txt")}>WolfcamQL commands and cvars</Button>
-          <Button onClick={async () => (await backend()).openUrl("https://github.com/GurnHub/wolfcam-wrapper#readme")}>WolfDeck guide</Button>
+          <Button onClick={async () => (await backend()).openUrl("https://github.com/GurnHub/wolfcam-wrapper#readme")}>Wolfcam Wrapper guide</Button>
         </div>
-        <p className="muted small">The WolfcamQL reference lists every console command and setting; anything in it can be used in a profile's extra commands or typed into the Player's console.</p>
+        <p className="muted small">The WolfcamQL reference lists every console command and setting; anything in it can be used in a profile's extra commands or typed into WolfcamQL's console.</p>
       </section>
 
       <section className="card">
@@ -171,11 +171,6 @@ export function SettingsView() {
         <div className="form-grid">
           <Field label="Extra WolfcamQL arguments" hint="Added to every launch, e.g. +set r_forceMap campgrounds" wide>
             <input value={settings.extraArgs} onChange={(e) => set({ extraArgs: e.target.value }, false)} spellCheck={false} />
-          </Field>
-          <Field label="Remote control key (Windows)" hint="On Windows the Player sends this key to the WolfcamQL window to deliver commands. Pick one you do not use; WolfDeck binds it itself.">
-            <select value={settings.controlKey} onChange={(e) => set({ controlKey: e.target.value }, false)}>
-              {["F13", "F14", "F15", "F12", "F11", "F10", "F9", "F8", "F7", "F6"].map((k) => <option key={k}>{k}</option>)}
-            </select>
           </Field>
         </div>
       </section>

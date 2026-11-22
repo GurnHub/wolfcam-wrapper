@@ -1,7 +1,9 @@
 //! Demo file parser for Quake 3 (dm_66..dm_71) and Quake Live (dm_73,
 //! dm_90, dm_91) demos. It walks every message, tracks config strings and
 //! snapshots, and extracts what the UI needs: match metadata, the player
-//! list, obituaries (kills) and chat.
+//! list, obituaries (kills), chat, rounds and last-man-alive moments of
+//! round-based Quake Live modes, and the final scoreboard where the server
+//! sends one the parser understands.
 //!
 //! The decoding rules follow the WolfcamQL client so that the times reported
 //! here line up with what `seekservertime` and `at` expect.
@@ -14,6 +16,8 @@ use std::collections::HashMap;
 const MAX_GENTITIES: usize = 1024;
 const ENTITYNUM_NONE: i32 = 1023;
 const ENTITYNUM_WORLD: i32 = 1022;
+/// Killer number of deaths caused by the world (falling, lava ...).
+pub const WORLD: i32 = ENTITYNUM_WORLD;
 const GENTITYNUM_BITS: i32 = 10;
 const MAX_FIELDS: usize = 64;
 const PACKET_BACKUP: usize = 32;
@@ -25,6 +29,17 @@ const EF_TELEPORT_BIT: i32 = 0x4;
 const EF_PLAYER_EVENT: i32 = 0x10;
 const EVENT_VALID_MSEC: i32 = 300;
 const MAX_CLIENTS: usize = 64;
+
+// Quake Live config strings for round-based modes (Clan Arena, Freeze Tag).
+const CS_SCORES1: usize = 6;
+const CS_SCORES2: usize = 7;
+const CS_ROUND_STATUS: usize = 661;
+const CS_ROUND_TIME: usize = 662;
+const CS_RED_PLAYERS_LEFT: usize = 663;
+const CS_BLUE_PLAYERS_LEFT: usize = 664;
+/// Quake Live gametypes with last-man-alive situations: Clan Arena and Freeze Tag.
+const GT_CA: i32 = 4;
+const GT_FREEZE: i32 = 9;
 
 const SVC_NOP: i32 = 1;
 const SVC_GAMESTATE: i32 = 2;
@@ -80,6 +95,55 @@ pub struct Chat {
     pub text: String,
 }
 
+/// One round of a round-based Quake Live mode.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Round {
+    pub number: i32,
+    pub start_time: i32,
+    pub end_time: i32,
+    /// 1 red, 2 blue, 0 not known.
+    pub winner: i32,
+}
+
+/// A player left as the last one alive on their team while the other team
+/// still had players ("1vN").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Clutch {
+    pub round: i32,
+    /// When the player became the last one alive.
+    pub server_time: i32,
+    pub clock_ms: i32,
+    pub client: i32,
+    pub name: String,
+    pub team: i32,
+    /// Enemies alive at that moment.
+    pub enemies: i32,
+    /// The player's team won the round.
+    pub won: bool,
+    /// Kills the player made from then until the round ended.
+    pub kills: i32,
+    pub round_end: i32,
+}
+
+/// A player's line on the last scoreboard the server sent (Clan Arena and
+/// Duel, whose formats are known here).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerScore {
+    pub client: i32,
+    pub name: String,
+    pub team: i32,
+    pub score: i32,
+    pub kills: i32,
+    pub deaths: i32,
+    /// Overall accuracy in percent.
+    pub accuracy: i32,
+    pub damage_given: i32,
+    pub damage_taken: Option<i32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DemoInfo {
@@ -102,6 +166,16 @@ pub struct DemoInfo {
     pub snapshots: u32,
     pub kills: Vec<Kill>,
     pub chats: Vec<Chat>,
+    #[serde(default)]
+    pub rounds: Vec<Round>,
+    #[serde(default)]
+    pub clutches: Vec<Clutch>,
+    /// Last scoreboard sent by the server; empty when there was none or its format is not known.
+    #[serde(default)]
+    pub scores: Vec<PlayerScore>,
+    /// Final red and blue team scores of team modes, from the config strings.
+    #[serde(default)]
+    pub team_scores: Option<[i32; 2]>,
     /// Set when the file ended early or a message could not be decoded.
     pub warning: Option<String>,
 }
@@ -175,6 +249,23 @@ struct Obit {
     last_message_num: i32,
 }
 
+/// A round in progress, with what is needed to work out its last-man-alive moments later.
+struct RoundState {
+    number: i32,
+    start: i32,
+    scores_at_start: [i32; 2],
+    /// Clients on red (1) or blue (2) when the round began.
+    roster: Vec<(i32, i32)>,
+    /// (server time, red alive, blue alive) whenever a count changed.
+    alive: Vec<(i32, i32, i32)>,
+}
+
+struct FinishedRound {
+    round: Round,
+    roster: Vec<(i32, i32)>,
+    alive: Vec<(i32, i32, i32)>,
+}
+
 struct Parser {
     protocol: i32,
     layout: Option<Layout>,
@@ -190,6 +281,9 @@ struct Parser {
     obits: Vec<Obit>,
     warmup_start: Option<i32>,
     seen_players: Vec<PlayerInfo>,
+    round: Option<RoundState>,
+    rounds: Vec<FinishedRound>,
+    damage_taken: HashMap<i32, i32>,
     info: DemoInfo,
 }
 
@@ -338,6 +432,9 @@ impl Parser {
             obits: Vec::new(),
             warmup_start: None,
             seen_players: Vec::new(),
+            round: None,
+            rounds: Vec::new(),
+            damage_taken: HashMap::new(),
             info: DemoInfo::default(),
         }
     }
@@ -414,7 +511,10 @@ impl Parser {
             None => (false, false, false, false),
         };
         let was_warmup = self.in_warmup();
-        self.configstrings.insert(i, value);
+        let old = self.configstrings.insert(i, value);
+        if self.protocol >= 73 && self.last_snap.is_some() && old.as_deref() != Some(self.cs(i)) {
+            self.round_configstring(i, server_time);
+        }
         if is_player {
             let client = (i - self.layout.as_ref().unwrap().cs_players) as i32;
             if let Some(p) = self.player(client) {
@@ -448,6 +548,133 @@ impl Parser {
         }
         if is_intermission && self.cs_int(i) != 0 && self.info.game_end_time.is_none() && self.last_snap.is_some() {
             self.info.game_end_time = Some(server_time);
+            // The last round of a match ends with the intermission rather than a round-over update.
+            self.end_round(server_time);
+        }
+    }
+
+    fn team_scores(&self) -> [i32; 2] {
+        [self.cs_int(CS_SCORES1), self.cs_int(CS_SCORES2)]
+    }
+
+    /// Follows the round state of round-based Quake Live modes.
+    fn round_configstring(&mut self, i: usize, server_time: i32) {
+        match i {
+            CS_ROUND_TIME => {
+                let t = self.cs_int(CS_ROUND_TIME);
+                if t > 0 {
+                    // A new round: its start time is announced when the countdown ends.
+                    self.end_round(server_time);
+                    let number = info_value(self.cs(CS_ROUND_STATUS), "round").and_then(|r| r.parse().ok()).unwrap_or(0);
+                    let roster = (0..MAX_CLIENTS as i32)
+                        .filter_map(|c| self.player(c).filter(|p| p.team == 1 || p.team == 2).map(|p| (c, p.team)))
+                        .collect();
+                    self.round = Some(RoundState {
+                        number,
+                        start: t,
+                        scores_at_start: self.team_scores(),
+                        roster,
+                        alive: vec![(t, self.cs_int(CS_RED_PLAYERS_LEFT), self.cs_int(CS_BLUE_PLAYERS_LEFT))],
+                    });
+                } else if t < 0 {
+                    self.end_round(server_time);
+                }
+            }
+            CS_RED_PLAYERS_LEFT | CS_BLUE_PLAYERS_LEFT => {
+                let (red, blue) = (self.cs_int(CS_RED_PLAYERS_LEFT), self.cs_int(CS_BLUE_PLAYERS_LEFT));
+                if let Some(r) = &mut self.round {
+                    r.alive.push((server_time, red, blue));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn end_round(&mut self, server_time: i32) {
+        let Some(r) = self.round.take() else { return };
+        let [red, blue] = self.team_scores();
+        let winner = if red > r.scores_at_start[0] {
+            1
+        } else if blue > r.scores_at_start[1] {
+            2
+        } else {
+            0
+        };
+        self.rounds.push(FinishedRound {
+            round: Round { number: r.number, start_time: r.start, end_time: server_time.max(r.start), winner },
+            roster: r.roster,
+            alive: r.alive,
+        });
+    }
+
+    /// Reads the scoreboards whose layout is known: `scores_ca` and `scores_duel` (as WolfcamQL reads them).
+    fn scoreboard(&mut self, t: &[String]) {
+        let n = |i: usize| t.get(i).and_then(|v| v.parse::<f64>().ok()).map(|v| v as i32).unwrap_or(0);
+        let players = n(1).max(0) as usize;
+        if players == 0 || players > MAX_CLIENTS {
+            return;
+        }
+        let mut out = Vec::new();
+        match t[0].as_str() {
+            "scores_ca" => {
+                // Team scores follow the count, then 16 values per player (17 before protocol 91,
+                // which adds a subscriber flag after the team).
+                let (start, block) = if self.protocol >= 91 {
+                    (4, 16)
+                } else if t.len() >= 4 + players * 17 {
+                    (4, 17)
+                } else {
+                    (2, 17)
+                };
+                let sub = block - 16;
+                for p in 0..players {
+                    let b = start + p * block;
+                    if b + block > t.len() {
+                        break;
+                    }
+                    out.push(PlayerScore {
+                        client: n(b),
+                        team: n(b + 1),
+                        score: n(b + 2 + sub),
+                        kills: n(b + 5 + sub),
+                        deaths: n(b + 6 + sub),
+                        accuracy: n(b + 7 + sub),
+                        damage_given: n(b + 10 + sub),
+                        ..Default::default()
+                    });
+                }
+            }
+            "scores_duel" => {
+                // A fixed block per player; its length depends on the weapon count of the protocol.
+                let block = (t.len() - 2) / players;
+                if block < 9 {
+                    return;
+                }
+                for p in 0..players {
+                    let b = 2 + p * block;
+                    out.push(PlayerScore {
+                        client: n(b),
+                        score: n(b + 1),
+                        kills: n(b + 4),
+                        deaths: n(b + 5),
+                        accuracy: n(b + 6),
+                        damage_given: n(b + 8),
+                        ..Default::default()
+                    });
+                }
+            }
+            _ => return,
+        }
+        for s in &mut out {
+            if let Some(p) = self.player(s.client) {
+                s.name = p.name;
+                if s.team == 0 {
+                    s.team = p.team;
+                }
+            }
+        }
+        if out.iter().all(|s| (0..MAX_CLIENTS as i32).contains(&s.client)) && !out.is_empty() {
+            self.info.scores = out;
         }
     }
 
@@ -772,6 +999,13 @@ impl Parser {
                     }
                 }
             }
+            "scores_ca" | "scores_duel" => self.scoreboard(&t),
+            // Clan Arena end-of-game statistics: scoreboard position, damage given, damage taken, weapon stats.
+            "castats" if t.len() >= 4 => {
+                if let (Ok(i), Ok(taken)) = (t[1].parse::<i32>(), t[3].parse::<i32>()) {
+                    self.damage_taken.insert(i, taken);
+                }
+            }
             "bcs0" if t.len() >= 3 => self.big_cs = t[2].clone(),
             "bcs1" if t.len() >= 3 => self.big_cs.push_str(&t[2]),
             "bcs2" if t.len() >= 3 => {
@@ -829,6 +1063,16 @@ impl Parser {
     }
 
     fn finish(mut self) -> DemoInfo {
+        // A demo can stop in the middle of a round.
+        let end = self.info.last_server_time;
+        self.end_round(end);
+        // `castats` lines are numbered by scoreboard position.
+        for (i, sc) in self.info.scores.iter_mut().enumerate() {
+            sc.damage_taken = self.damage_taken.get(&(i as i32)).copied();
+        }
+        // Spectators are listed too, following someone; they did not play.
+        self.info.scores.retain(|s| s.team != 3);
+        let team_scores = self.team_scores();
         let serverinfo = self.cs(0).to_string();
         let info = &mut self.info;
         info.protocol = self.protocol;
@@ -870,8 +1114,63 @@ impl Parser {
                 || k.killer == k.victim
                 || (team_game && k.killer_team == k.victim_team && k.killer_team != 0);
         }
+        if self.protocol >= 73 && team_game && team_scores != [0, 0] {
+            info.team_scores = Some(team_scores);
+        }
+        let rounds: Vec<FinishedRound> = std::mem::take(&mut self.rounds)
+            .into_iter()
+            .filter(|r| !pre_game(r.round.start_time))
+            .collect();
+        if self.protocol >= 73 && (info.gametype == GT_CA || info.gametype == GT_FREEZE) {
+            let names: HashMap<i32, String> = info.players.iter().map(|p| (p.client_num, p.name.clone())).collect();
+            for r in &rounds {
+                info.clutches.extend(find_clutches(r, &info.kills, &names, game_start.unwrap_or(first)));
+            }
+        }
+        info.rounds = rounds.into_iter().map(|r| r.round).collect();
         self.info
     }
+}
+
+/// How long after a "players left" update the kill that caused it can still be stamped.
+const ALIVE_SLACK_MS: i32 = 250;
+
+/// Finds the moments in a round when a team was down to one player while the
+/// other team still had players. The alive counts come from the server; who
+/// the last player was is worked out from the round's roster and its kills.
+fn find_clutches(r: &FinishedRound, kills: &[Kill], names: &HashMap<i32, String>, game_start: i32) -> Vec<Clutch> {
+    let mut out = Vec::new();
+    let round_kills: Vec<&Kill> =
+        kills.iter().filter(|k| k.server_time >= r.round.start_time && k.server_time <= r.round.end_time + ALIVE_SLACK_MS).collect();
+    for team in [1, 2] {
+        let own = |red: i32, blue: i32| if team == 1 { red } else { blue };
+        // A team that starts with one player (uneven or 1v1 games) is not "left" alone.
+        let Some(first_crowd) = r.alive.iter().position(|&(_, red, blue)| own(red, blue) > 1) else { continue };
+        let moment = r.alive[first_crowd..].iter().find(|&&(t, red, blue)| {
+            let other = if team == 1 { blue } else { red };
+            own(red, blue) == 1 && other >= 1 && t <= r.round.end_time
+        });
+        let Some(&(t, red, blue)) = moment else { continue };
+        let enemies = if team == 1 { blue } else { red };
+        let dead: Vec<i32> = round_kills.iter().filter(|k| k.server_time <= t + ALIVE_SLACK_MS).map(|k| k.victim).collect();
+        let alive: Vec<i32> = r.roster.iter().filter(|&&(c, tm)| tm == team && !dead.contains(&c)).map(|&(c, _)| c).collect();
+        // Only report the moment when the player can be named for certain.
+        let [client] = alive[..] else { continue };
+        let kills = round_kills.iter().filter(|k| k.killer == client && !k.own_goal && k.server_time > t).count() as i32;
+        out.push(Clutch {
+            round: r.round.number,
+            server_time: t,
+            clock_ms: (t - game_start).max(0),
+            client,
+            name: names.get(&client).cloned().unwrap_or_else(|| format!("client {client}")),
+            team,
+            enemies,
+            won: r.round.winner == team,
+            kills,
+            round_end: r.round.end_time,
+        });
+    }
+    out
 }
 
 fn protocol_from_extension(path: &std::path::Path) -> i32 {
@@ -960,6 +1259,77 @@ mod tests {
     fn tokenizes_server_commands() {
         assert_eq!(tokenize("cs 529 \"n\\Foo Bar\\t\\1\""), vec!["cs", "529", "n\\Foo Bar\\t\\1"]);
         assert_eq!(tokenize("chat \"a: hi there\""), vec!["chat", "a: hi there"]);
+    }
+
+    fn kill(t: i32, killer: i32, victim: i32) -> Kill {
+        Kill {
+            server_time: t,
+            clock_ms: 0,
+            warmup: false,
+            killer,
+            victim,
+            killer_name: String::new(),
+            victim_name: String::new(),
+            killer_team: 0,
+            victim_team: 0,
+            mod_id: 7,
+            weapon: "RL".into(),
+            own_goal: false,
+        }
+    }
+
+    #[test]
+    fn finds_the_last_player_alive_and_the_outcome() {
+        // Red 1, 2, 3 against blue 4, 5. Red loses 1 and 2, then 3 takes out both blue players.
+        let r = FinishedRound {
+            round: Round { number: 4, start_time: 10_000, end_time: 30_000, winner: 1 },
+            roster: vec![(1, 1), (2, 1), (3, 1), (4, 2), (5, 2)],
+            alive: vec![(10_000, 3, 2), (12_000, 2, 2), (15_000, 1, 2), (20_000, 1, 1), (29_990, 1, 0)],
+        };
+        // The kill that leaves red with one player arrives just after the count update.
+        let kills = vec![kill(12_000, 4, 1), kill(15_050, 5, 2), kill(20_000, 3, 4), kill(30_000, 3, 5)];
+        let names = HashMap::from([(3, "last".to_string())]);
+        let c = find_clutches(&r, &kills, &names, 5_000);
+        assert_eq!(c.len(), 2, "{c:?}");
+        let red = c.iter().find(|c| c.team == 1).unwrap();
+        assert_eq!((red.client, red.name.as_str(), red.enemies, red.won, red.kills), (3, "last", 2, true, 2));
+        assert_eq!((red.server_time, red.clock_ms, red.round), (15_000, 10_000, 4));
+        // Blue's last player (5) faced one enemy and lost.
+        let blue = c.iter().find(|c| c.team == 2).unwrap();
+        assert_eq!((blue.client, blue.enemies, blue.won, blue.kills), (5, 1, false, 0));
+    }
+
+    #[test]
+    fn skips_a_last_player_that_cannot_be_named() {
+        // Two red players are not accounted for by kills (one disconnected), so the last one is unknown.
+        let r = FinishedRound {
+            round: Round { number: 1, start_time: 0, end_time: 9_000, winner: 2 },
+            roster: vec![(1, 1), (2, 1), (3, 1), (4, 2)],
+            alive: vec![(0, 3, 1), (5_000, 1, 1)],
+        };
+        assert!(find_clutches(&r, &[kill(5_000, 4, 1)], &HashMap::new(), 0).is_empty());
+    }
+
+    #[test]
+    fn reads_clan_arena_and_duel_scoreboards() {
+        let mut p = Parser::new(91);
+        // Two players: client, team, score, ping, time, kills, deaths, accuracy, best weapon,
+        // best weapon accuracy, damage, then five award/state values.
+        p.scoreboard(&tokenize("scores_ca 2 5 10 9 2 74 15 9 18 9 47 7 68 6278 16 0 0 0 0 10 1 65 7 9 17 11 37 6 37 5306 5 1 0 0 0"));
+        let s = &p.info.scores;
+        assert_eq!(s.len(), 2);
+        assert_eq!((s[0].client, s[0].team, s[0].score, s[0].kills, s[0].deaths, s[0].accuracy, s[0].damage_given), (9, 2, 74, 18, 9, 47, 6278));
+        assert_eq!((s[1].client, s[1].kills, s[1].damage_given), (10, 17, 5306));
+
+        // Duel blocks are fixed length per player; here 11 values each.
+        p.scoreboard(&tokenize("scores_duel 2 1 11 29 10 11 6 31 5 4189 7 0 2 5 29 10 6 12 28 7 3730 3 0"));
+        let s = &p.info.scores;
+        assert_eq!((s[0].client, s[0].score, s[0].kills, s[0].deaths, s[0].accuracy, s[0].damage_given), (1, 11, 11, 6, 31, 4189));
+        assert_eq!((s[1].client, s[1].kills, s[1].deaths, s[1].damage_given), (2, 6, 12, 3730));
+
+        // Scoreboards in unknown formats leave the last good one in place.
+        p.scoreboard(&tokenize("scores_duel 2 1 2"));
+        assert_eq!(p.info.scores.len(), 2);
     }
 
     #[test]

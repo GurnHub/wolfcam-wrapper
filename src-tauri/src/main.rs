@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    wolfdeck_lib::run()
+    wolfcam_wrapper_lib::run()
 }

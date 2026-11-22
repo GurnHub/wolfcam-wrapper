@@ -78,7 +78,7 @@ export function ClipsView() {
         </header>
         {clips.length === 0 ? (
           <Empty title="No clips yet">
-            Add clips from a demo's kill list, from the frag finder, or by marking in and out points in the Player. They are rendered here in one unattended batch.
+            Add clips from a demo's kill list or from the highlights (frags, last man alive, whole matches). They are rendered here in one unattended batch.
           </Empty>
         ) : (
           <div className="clip-list">
